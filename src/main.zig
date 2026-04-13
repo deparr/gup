@@ -1,6 +1,12 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const usage =
+\\gup [OPTIONS]
+\\
+\\  --help, -h   Show this menu
+;
+
 const Config = struct {
     platform: Platform,
     arch: Arch,
@@ -111,6 +117,10 @@ const Config = struct {
                 self.flavor = value;
             } else if (strcmp(key, "install-path") or strcmp(key, "i")) {
                 self.install_path = value;
+            } else if (strcmp(key, "help") or strcmp(key, "h")) {
+                // todo properly write this to stderr
+                std.debug.print("{s}\n", .{ usage });
+                std.process.exit(0);
             } else {
                 std.log.warn("ignoring unknown arg key: {s}", .{key});
             }
