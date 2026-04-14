@@ -47,7 +47,7 @@ const Config = struct {
         };
     }
 
-    pub fn initEnv(self: *Config, env: std.process.EnvMap) void {
+    pub fn initEnv(self: *Config, env: *std.process.Environ.Map) void {
         if (env.get("GUP_PLATFORM")) |platform_str| {
             if (enumFromEnv(Platform, "GUP_PLATFORM", platform_str)) |platform| {
                 self.platform = platform;
@@ -87,7 +87,7 @@ const Config = struct {
     }
 
     /// assumes caller frees `args`
-    pub fn initCliArgs(self: *Config, args: *std.process.ArgIterator) !void {
+    pub fn initCliArgs(self: *Config, args: *std.process.Args.Iterator) !void {
         _ = args.skip();
         while (args.next()) |arg| {
             const kind = argKind(arg);
@@ -219,7 +219,7 @@ const Config = struct {
         };
     }
 
-    fn resovle(self: *Config, arena: std.mem.Allocator, environ: std.process.EnvMap) !void {
+    pub fn resolve(self: *Config, arena: std.mem.Allocator, environ: *std.process.Environ.Map) !void {
         if (!std.fs.path.isAbsolute(self.install_path)) {
             const path = self.install_path;
             if (path.len < 1 or path[0] != '~') return error.NonAbsoluteInstallPath;
@@ -324,7 +324,7 @@ fn uriQueryFromConfig(config: Config, buf: []u8) !usize {
 }
 
 /// caller must close returned dir
-fn openTempDir(environ: std.process.EnvMap) !std.fs.Dir {
+fn openTempDir(io: std.Io, environ: *std.process.Environ.Map) !std.Io.Dir {
     const path = switch (builtin.os.tag) {
         .linux, .macos => "/tmp",
         .windows => blk: {
@@ -344,7 +344,7 @@ fn openTempDir(environ: std.process.EnvMap) !std.fs.Dir {
         else => unreachable,
     };
 
-    return std.fs.openDirAbsolute(path, .{});
+    return std.Io.Dir.openDirAbsolute(io, path, .{});
 }
 
 fn resolveInstallPath(arena: std.mem.Allocator, path: []const u8, environ: std.process.EnvMap) ![]const u8 {
@@ -358,23 +358,20 @@ fn resolveInstallPath(arena: std.mem.Allocator, path: []const u8, environ: std.p
     return std.fs.path.join(arena, &.{ home, path[1..] });
 }
 
-pub fn main() !void {
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    var arena_allocator = std.heap.ArenaAllocator.init(debug_allocator.allocator());
-    defer _ = debug_allocator.deinit();
-    const arena = arena_allocator.allocator();
-    defer arena_allocator.deinit();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const arena = init.arena.allocator();
+    const environ = init.environ_map;
 
     // resolve the config from defaults -> environment -> cli args
     var config: Config = undefined;
     config.initDefault();
-    const environ = try std.process.getEnvMap(arena);
     config.initEnv(environ);
     {
-        var it = try std.process.argsWithAllocator(arena);
+        var it = try init.minimal.args.iterateAllocator(arena);
         try config.initCliArgs(&it);
     }
-    try config.resolve();
+    try config.resolve(arena, environ);
 
     log.info("resolved config: {f}", .{config});
 
@@ -392,7 +389,7 @@ pub fn main() !void {
         if (config.dry_run) return;
 
         var res_writer = try std.Io.Writer.Allocating.initCapacity(arena, 10 * 1024 * 1024);
-        var client = std.http.Client{ .allocator = arena };
+        var client = std.http.Client{ .io = io, .allocator = arena };
         const res = try client.fetch(.{
             .method = .GET,
             .location = .{ .uri = uri },
@@ -410,14 +407,14 @@ pub fn main() !void {
 
     log.info("zip_bytes len: {d}", .{zip_bytes.len});
 
-    var temp_dir = try openTempDir(environ);
-    var zip_file = try temp_dir.createFile("gup-godot.zip", .{ .truncate = true, .read = true });
-    defer zip_file.close();
-    try zip_file.writeAll(zip_bytes);
-    var zip_reader = zip_file.reader(&buf);
+    var temp_dir = try openTempDir(io, environ);
+    var zip_file = try temp_dir.createFile(io, "gup-godot.zip", .{ .truncate = true, .read = true });
+    defer zip_file.close(io);
+    try zip_file.writeStreamingAll(io, zip_bytes);
+    var zip_reader = zip_file.reader(io, &buf);
 
-    const dest_dir = try std.fs.openDirAbsolute(config.install_path, .{});
-    defer dest_dir.close();
+    const dest_dir = try std.Io.Dir.openDirAbsolute(io, config.install_path, .{});
+    defer dest_dir.close(io);
     {
         var filename_buf: [256]u8 = undefined;
         var it = try std.zip.Iterator.init(&zip_reader);
