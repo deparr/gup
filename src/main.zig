@@ -219,6 +219,19 @@ const Config = struct {
         };
     }
 
+    fn resovle(self: *Config, arena: std.mem.Allocator, environ: std.process.EnvMap) !void {
+        if (!std.fs.path.isAbsolute(self.install_path)) {
+            const path = self.install_path;
+            if (path.len < 1 or path[0] != '~') return error.NonAbsoluteInstallPath;
+            const home = switch (builtin.os.tag) {
+                .windows => environ.get("USERPROFILE"),
+                else => environ.get("HOME"),
+            } orelse return error.MissingHomeVar;
+
+            self.install_path = try std.fs.path.join(arena, &.{ home, path[1..] });
+        }
+    }
+
     pub fn format(self: Config, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.print(
             \\Config{{
@@ -310,7 +323,6 @@ fn uriQueryFromConfig(config: Config, buf: []u8) !usize {
     return w.buffered().len;
 }
 
-
 /// caller must close returned dir
 fn openTempDir(environ: std.process.EnvMap) !std.fs.Dir {
     const path = switch (builtin.os.tag) {
@@ -335,6 +347,17 @@ fn openTempDir(environ: std.process.EnvMap) !std.fs.Dir {
     return std.fs.openDirAbsolute(path, .{});
 }
 
+fn resolveInstallPath(arena: std.mem.Allocator, path: []const u8, environ: std.process.EnvMap) ![]const u8 {
+    if (std.fs.path.isAbsolute(path)) return path;
+    if (path.len < 1 or path[0] != '~') return error.NonAbsoluteInstallpath;
+
+    const home = switch (builtin.os.tag) {
+        .windows => environ.get("USERPROFILE"),
+        else => environ.get("HOME"),
+    } orelse return error.MissingHomeVar;
+    return std.fs.path.join(arena, &.{ home, path[1..] });
+}
+
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     var arena_allocator = std.heap.ArenaAllocator.init(debug_allocator.allocator());
@@ -351,6 +374,7 @@ pub fn main() !void {
         var it = try std.process.argsWithAllocator(arena);
         try config.initCliArgs(&it);
     }
+    try config.resolve();
 
     log.info("resolved config: {f}", .{config});
 
@@ -388,18 +412,18 @@ pub fn main() !void {
 
     var temp_dir = try openTempDir(environ);
     var zip_file = try temp_dir.createFile("gup-godot.zip", .{ .truncate = true, .read = true });
+    defer zip_file.close();
     try zip_file.writeAll(zip_bytes);
     var zip_reader = zip_file.reader(&buf);
 
-    const dest_dir = try std.fs.cwd().openDir("resout", .{});
-
+    const dest_dir = try std.fs.openDirAbsolute(config.install_path, .{});
+    defer dest_dir.close();
     {
         var filename_buf: [256]u8 = undefined;
         var it = try std.zip.Iterator.init(&zip_reader);
         while (try it.next()) |entry| {
             try entry.extract(&zip_reader, .{}, &filename_buf, dest_dir);
-            log.info("extracting {s}", .{ filename_buf[0..entry.filename_len] });
+            log.info("extracting {s}", .{filename_buf[0..entry.filename_len]});
         }
     }
-
 }
