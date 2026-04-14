@@ -1,13 +1,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const godot_rev = @import("godot_rev");
+const assert = std.debug.assert;
 
 const log = std.log.scoped(.gup);
 
 const usage =
-\\gup [OPTIONS]
-\\
-\\  --help, -h   Show this menu
+    \\gup [OPTIONS]
+    \\
+    \\  --help, -h   Show this menu
 ;
 
 const Config = struct {
@@ -18,6 +19,8 @@ const Config = struct {
     flavor: []const u8,
     install_path: []const u8,
     bin_name: []const u8 = &.{},
+    /// cli only option
+    dry_run: bool,
 
     pub fn initDefault(self: *Config) void {
         self.* = .{
@@ -39,7 +42,8 @@ const Config = struct {
             .script = .gdscript,
             .version = Version.parse(godot_rev.latest_stable) catch unreachable,
             .flavor = "stable",
-            .install_path = if (builtin.os.tag == .windows) "~/AppData/Roaming" else "~/.local/bin",
+            .install_path = if (builtin.os.tag == .windows) "~/AppData/Roaming/gup" else "~/.local/bin",
+            .dry_run = false,
         };
     }
 
@@ -78,7 +82,6 @@ const Config = struct {
         if (std.meta.stringToEnum(Tag, env_value)) |value| {
             return value;
         }
-
         log.warn("{s} exists but does not contain a valid value ({s}), falling back to default", .{ env_key, env_value });
         return null;
     }
@@ -112,15 +115,23 @@ const Config = struct {
                 } else {
                     log.err("invalid arch: {s}", .{value});
                 }
+            } else if (strcmp(key, "script") or strcmp(key, "s")) {
+                if (std.meta.stringToEnum(Script, value)) |script| {
+                    self.script = script;
+                } else {
+                    log.err("invalid script: {s}", .{value});
+                }
             } else if (strcmp(key, "version") or strcmp(key, "v")) {
                 self.version = try Version.parse(value);
             } else if (strcmp(key, "flavor") or strcmp(key, "f")) {
                 self.flavor = value;
             } else if (strcmp(key, "install-path") or strcmp(key, "i")) {
                 self.install_path = value;
+            } else if (strcmp(key, "dry-run") or strcmp(key, "n")) {
+                self.dry_run = true;
             } else if (strcmp(key, "help") or strcmp(key, "h")) {
                 // todo properly write this to stderr
-                std.debug.print("{s}\n", .{ usage });
+                std.debug.print("{s}\n", .{usage});
                 std.process.exit(0);
             } else {
                 log.warn("ignoring unknown arg key: {s}", .{key});
@@ -213,11 +224,14 @@ const Config = struct {
             \\Config{{
             \\  platform: {t}
             \\  arch: {t}
+            \\  script: {t}
             \\  version: {f}
             \\  flavor: {s}
+            \\  install_path: {s}
+            \\  bin_name: {s}
             \\}}
         ,
-            .{ self.platform, self.arch, self.version, self.flavor },
+            .{ self.platform, self.arch, self.script, self.version, self.flavor, self.install_path, self.bin_name },
         );
     }
 
@@ -278,17 +292,17 @@ const Config = struct {
 
 fn uriQueryFromConfig(config: Config, buf: []u8) !usize {
     var w = std.Io.Writer.fixed(buf);
-    try w.print("?version={f}", .{ config.version });
+    try w.print("?version={f}", .{config.version});
     if (config.flavor.len > 0) {
-        try w.print("&flavor={s}", .{ config.flavor });
+        try w.print("&flavor={s}", .{config.flavor});
     }
     if (config.slug()) |slug| {
-        try w.print("&slug={s}", .{ slug });
+        try w.print("&slug={s}", .{slug});
     } else {
         return error.InvalidBuildConfig;
     }
     if (config.platformQuery()) |platform| {
-        try w.print("&platform={s}", .{ platform });
+        try w.print("&platform={s}", .{platform});
     } else {
         return error.InvalidBuildConfig;
     }
@@ -296,48 +310,96 @@ fn uriQueryFromConfig(config: Config, buf: []u8) !usize {
     return w.buffered().len;
 }
 
+
+/// caller must close returned dir
+fn openTempDir(environ: std.process.EnvMap) !std.fs.Dir {
+    const path = switch (builtin.os.tag) {
+        .linux, .macos => "/tmp",
+        .windows => blk: {
+            if (environ.get("TEMP")) |temp| {
+                break :blk temp;
+            }
+            if (environ.get("TMP")) |temp| {
+                break :blk temp;
+            }
+            // use appdata, don't really likethis
+            log.info("falling back to $APPDATA", .{});
+            if (environ.get("APPDATA")) |temp| {
+                break :blk temp;
+            }
+            @panic("why can't I break :blk unreachable");
+        },
+        else => unreachable,
+    };
+
+    return std.fs.openDirAbsolute(path, .{});
+}
+
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
+    var arena_allocator = std.heap.ArenaAllocator.init(debug_allocator.allocator());
     defer _ = debug_allocator.deinit();
-    const gpa = debug_allocator.allocator();
+    const arena = arena_allocator.allocator();
+    defer arena_allocator.deinit();
 
     // resolve the config from defaults -> environment -> cli args
     var config: Config = undefined;
     config.initDefault();
-    var environ = try std.process.getEnvMap(gpa);
-    defer environ.deinit();
+    const environ = try std.process.getEnvMap(arena);
     config.initEnv(environ);
     {
-        var it = try std.process.argsWithAllocator(gpa);
+        var it = try std.process.argsWithAllocator(arena);
         try config.initCliArgs(&it);
-        it.deinit();
     }
 
     log.info("resolved config: {f}", .{config});
 
+    var zip_bytes: []u8 = undefined;
     var buf: [4096]u8 = undefined;
-    @memcpy(buf[0..].ptr, godot_rev.download_url);
-    const query_str_len = try uriQueryFromConfig(config, buf[godot_rev.download_url.len..]);
-    const uri_str = buf[0..godot_rev.download_url.len + query_str_len];
-    const uri = try std.Uri.parse(uri_str);
 
-    log.info("attempting to fetch uri: {s}", .{ uri_str });
+    {
+        @memcpy(buf[0..].ptr, godot_rev.download_url);
+        const query_str_len = try uriQueryFromConfig(config, buf[godot_rev.download_url.len..]);
+        const uri_str = buf[0 .. godot_rev.download_url.len + query_str_len];
+        const uri = try std.Uri.parse(uri_str);
 
-    var res_writer = try std.Io.Writer.Allocating.initCapacity(gpa, 10 * 1024 * 1024);
-    var client = std.http.Client{ .allocator = gpa };
-    const res = try client.fetch(. {
-        .method = .GET,
-        .location = .{ .uri = uri },
-        .response_writer = &res_writer.writer,
-    });
-    client.deinit();
+        log.info("attempting to fetch uri: {s}", .{uri_str});
 
-    if (res.status != .ok) {
-        log.err("http error status: {t} {?s}", .{ res.status, res.status.phrase() });
-        return;
+        if (config.dry_run) return;
+
+        var res_writer = try std.Io.Writer.Allocating.initCapacity(arena, 10 * 1024 * 1024);
+        var client = std.http.Client{ .allocator = arena };
+        const res = try client.fetch(.{
+            .method = .GET,
+            .location = .{ .uri = uri },
+            .response_writer = &res_writer.writer,
+        });
+        client.deinit();
+
+        if (res.status != .ok) {
+            log.err("http error status: {t} {?s}", .{ res.status, res.status.phrase() });
+            return;
+        }
+
+        zip_bytes = try res_writer.toOwnedSlice();
     }
 
-    const zip_bytes = try res_writer.toOwnedSlice();
-    log.info("zip len: {d}", .{ zip_bytes.len });
-    gpa.free(zip_bytes);
+    log.info("zip_bytes len: {d}", .{zip_bytes.len});
+
+    var temp_dir = try openTempDir(environ);
+    var zip_file = try temp_dir.createFile("gup-godot.zip", .{ .truncate = true, .read = true });
+    try zip_file.writeAll(zip_bytes);
+    var zip_reader = zip_file.reader(&buf);
+
+    const dest_dir = try std.fs.cwd().openDir("resout", .{});
+
+    {
+        var filename_buf: [256]u8 = undefined;
+        var it = try std.zip.Iterator.init(&zip_reader);
+        while (try it.next()) |entry| {
+            try entry.extract(&zip_reader, .{}, &filename_buf, dest_dir);
+            log.info("extracting {s}", .{ filename_buf[0..entry.filename_len] });
+        }
+    }
+
 }
