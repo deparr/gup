@@ -8,7 +8,14 @@ const log = std.log.scoped(.gup);
 const usage =
     \\gup [OPTIONS]
     \\
-    \\  --help, -h   Show this menu
+    \\  --platform=[V],       -p   Specify a platform [windows, linux, macos, web, android, horizon, pico] (host)
+    \\  --arch=[V],           -a   Specify an architecture [x64, x32, arm64, arm32, universal] (host)
+    \\  --script=[V],         -s   Specify script support [gdscript*, dotnet]
+    \\  --flavor=[STR],       -f   Specify a build flavor (stable)
+    \\  --install-path=[STR], -i   Specify binary location (win: ~/AppData/Roaming/gup, else: ~/.local/bin)
+    \\  --setup-links=[bool], -l   Create flavor-delineated symlink to main binary. ie godot ->  Godot_4.6.2.win64.exe
+    \\  --link-name=[STR],    -o   Base name for symlinks when --setup-links is true. (godot)
+    \\  --help,               -h   Show this menu
 ;
 
 const Config = struct {
@@ -18,8 +25,9 @@ const Config = struct {
     version: Version,
     flavor: []const u8,
     install_path: []const u8,
-    bin_name: []const u8 = &.{},
     /// cli only option
+    setup_links: bool,
+    link_name: []const u8,
     dry_run: bool,
 
     pub fn initDefault(self: *Config) void {
@@ -43,6 +51,8 @@ const Config = struct {
             .version = Version.parse(godot_rev.latest_stable) catch unreachable,
             .flavor = "stable",
             .install_path = if (builtin.os.tag == .windows) "~/AppData/Roaming/gup" else "~/.local/bin",
+            .setup_links = true,
+            .link_name = "godot",
             .dry_run = false,
         };
     }
@@ -75,6 +85,12 @@ const Config = struct {
         }
         if (env.get("GUP_INSTALL_PATH")) |install_path| {
             self.install_path = install_path;
+        }
+        if (env.get("GUP_SETUP_LINKS")) |setup_links| {
+            self.setup_links = readBoolOption(setup_links);
+        }
+        if (env.get("GUP_LINK_NAME")) |link_name| {
+            self.link_name = link_name;
         }
     }
 
@@ -127,6 +143,10 @@ const Config = struct {
                 self.flavor = value;
             } else if (strcmp(key, "install-path") or strcmp(key, "i")) {
                 self.install_path = value;
+            } else if (strcmp(key, "setup-links") or strcmp(key, "l")) {
+                self.setup_links = readBoolOption(value);
+            } else if (strcmp(key, "link-name") or strcmp(key, "o")) {
+                self.link_name = value;
             } else if (strcmp(key, "dry-run") or strcmp(key, "n")) {
                 self.dry_run = true;
             } else if (strcmp(key, "help") or strcmp(key, "h")) {
@@ -147,6 +167,12 @@ const Config = struct {
 
     fn strcmp(a: []const u8, b: []const u8) bool {
         return std.mem.eql(u8, a, b);
+    }
+
+    fn readBoolOption(value: []const u8) bool {
+        return strcmp(value, "1") or
+            std.ascii.eqlIgnoreCase(value, "yes") or
+            std.ascii.eqlIgnoreCase(value, "true");
     }
 
     pub fn slug(self: Config) ?[]const u8 {
@@ -232,6 +258,17 @@ const Config = struct {
         }
     }
 
+    pub fn linkSuffix(self: *const Config) []const u8 {
+        if (strcmp(self.flavor, "stable")) {
+            return "";
+        } else if (std.mem.find(u8, self.flavor, "dev")) |_| {
+            return "-dev";
+        } else if (std.mem.find(u8, self.flavor, "rc")) |_| {
+            return "-rc";
+        }
+        return self.flavor;
+    }
+
     pub fn format(self: Config, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.print(
             \\Config{{
@@ -241,10 +278,20 @@ const Config = struct {
             \\  version: {f}
             \\  flavor: {s}
             \\  install_path: {s}
-            \\  bin_name: {s}
+            \\  setup_links: {}
+            \\  link_name: {s}
             \\}}
         ,
-            .{ self.platform, self.arch, self.script, self.version, self.flavor, self.install_path, self.bin_name },
+            .{
+                self.platform,
+                self.arch,
+                self.script,
+                self.version,
+                self.flavor,
+                self.install_path,
+                self.setup_links,
+                self.link_name,
+            },
         );
     }
 
@@ -373,7 +420,7 @@ pub fn main(init: std.process.Init) !void {
     }
     try config.resolve(arena, environ);
 
-    log.info("resolved config: {f}", .{config});
+    log.debug("resolved config: {f}", .{config});
 
     var zip_bytes: []u8 = undefined;
     var buf: [4096]u8 = undefined;
@@ -384,7 +431,7 @@ pub fn main(init: std.process.Init) !void {
         const uri_str = buf[0 .. godot_rev.download_url.len + query_str_len];
         const uri = try std.Uri.parse(uri_str);
 
-        log.info("attempting to fetch uri: {s}", .{uri_str});
+        log.info("attempting to fetch uri: {s}...", .{uri_str});
 
         if (config.dry_run) return;
 
@@ -395,7 +442,7 @@ pub fn main(init: std.process.Init) !void {
             .location = .{ .uri = uri },
             .response_writer = &res_writer.writer,
         });
-        client.deinit();
+        client.deinit(); // this can leak if the fetch fails.
 
         if (res.status != .ok) {
             log.err("http error status: {t} {?s}", .{ res.status, res.status.phrase() });
@@ -405,22 +452,76 @@ pub fn main(init: std.process.Init) !void {
         zip_bytes = try res_writer.toOwnedSlice();
     }
 
-    log.info("zip_bytes len: {d}", .{zip_bytes.len});
+    log.debug("zip_bytes len: {d}", .{zip_bytes.len});
+    log.info("download complete", .{});
 
     var temp_dir = try openTempDir(io, environ);
+    defer temp_dir.close(io);
     var zip_file = try temp_dir.createFile(io, "gup-godot.zip", .{ .truncate = true, .read = true });
-    defer zip_file.close(io);
+    errdefer zip_file.close(io);
     try zip_file.writeStreamingAll(io, zip_bytes);
     var zip_reader = zip_file.reader(io, &buf);
 
     const dest_dir = try std.Io.Dir.openDirAbsolute(io, config.install_path, .{});
     defer dest_dir.close(io);
+    log.info("extracting to {s}", .{config.install_path});
     {
-        var filename_buf: [256]u8 = undefined;
+        var filename_buf: [512]u8 = undefined;
         var it = try std.zip.Iterator.init(&zip_reader);
         while (try it.next()) |entry| {
-            try entry.extract(&zip_reader, .{}, &filename_buf, dest_dir);
-            log.info("extracting {s}", .{filename_buf[0..entry.filename_len]});
+            entry.extract(&zip_reader, .{}, &filename_buf, dest_dir) catch |err| switch (err) {
+                error.PathAlreadyExists => {
+                    log.info("{s} already exists, skipping", .{filename_buf[0..entry.filename_len]});
+                },
+                else => {
+                    log.err("while extracting: {t}", .{err});
+                    continue;
+                },
+            };
+            const filename = filename_buf[0..entry.filename_len];
+            log.info("extracted {s}", .{filename});
+
+            // TODO better way to identify main binary
+            if (config.setup_links) {
+                const console = if (std.mem.find(u8, filename, "console")) |_| "-console" else "";
+                const flavor = config.linkSuffix();
+                const ext = if (builtin.os.tag == .windows) ".exe" else "";
+
+                var symlink_path_buf: [64]u8 = undefined;
+                const symlink_path = try std.fmt.bufPrint(&symlink_path_buf, "{s}{s}{s}{s}", .{ config.link_name, console, flavor, ext });
+
+                // try this?
+                const should_link = blk: {
+                    if (dest_dir.statFile(io, symlink_path, .{ .follow_symlinks = false })) |stat| {
+                        if (stat.kind != .sym_link) {
+                            log.warn("won't remove non-symlink {s} to link to {s}", .{ symlink_path, filename });
+                            break :blk false;
+                        }
+                        try dest_dir.deleteFile(io, symlink_path);
+                        break :blk true;
+                    } else |err| switch (err) {
+                        error.FileNotFound => break :blk true,
+                        else => {
+                            log.warn("won't link due to stat error: {t}", .{err});
+                            break :blk false;
+                        },
+                    }
+                };
+
+                if (should_link) {
+                    dest_dir.symLink(io, filename, symlink_path, .{}) catch |err| {
+                        log.err("unable to link {s} -> {s}: {t}", .{ symlink_path, filename, err });
+                    };
+                }
+            }
         }
     }
+
+    if (config.setup_links) {
+        log.info("symlinked binaries to {s}{s}", .{ config.link_name, config.linkSuffix() });
+    }
+
+    zip_file.close(io);
+    temp_dir.close(io);
+    dest_dir.close(io);
 }
