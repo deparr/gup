@@ -15,6 +15,7 @@ const usage =
     \\  --install-path=[STR], -i   Specify binary location (win: ~/AppData/Roaming/gup, else: ~/.local/bin)
     \\  --setup-links=[bool], -l   Create flavor-delineated symlink to main binary. ie godot ->  Godot_4.6.2.win64.exe
     \\  --link-name=[STR],    -o   Base name for symlinks when --setup-links is true. (godot)
+    \\  --from-zip=[STR],     -z   Unpack zip at [STR] instead of downloading a release from godotengine.org
     \\  --help,               -h   Show this menu
 ;
 
@@ -28,6 +29,7 @@ const Config = struct {
     /// cli only option
     setup_links: bool,
     link_name: []const u8,
+    from_zip: ?[]const u8,
     dry_run: bool,
 
     pub fn initDefault(self: *Config) void {
@@ -53,6 +55,7 @@ const Config = struct {
             .install_path = if (builtin.os.tag == .windows) "~/AppData/Roaming/gup" else "~/.local/bin",
             .setup_links = true,
             .link_name = "godot",
+            .from_zip = null,
             .dry_run = false,
         };
     }
@@ -91,6 +94,9 @@ const Config = struct {
         }
         if (env.get("GUP_LINK_NAME")) |link_name| {
             self.link_name = link_name;
+        }
+        if (env.get("GUP_FROM_ZIP")) |from_zip| {
+            self.from_zip = from_zip;
         }
     }
 
@@ -147,6 +153,8 @@ const Config = struct {
                 self.setup_links = readBoolOption(value);
             } else if (strcmp(key, "link-name") or strcmp(key, "o")) {
                 self.link_name = value;
+            } else if (strcmp(key, "from-zip") or strcmp(key, "z")) {
+                self.from_zip = value;
             } else if (strcmp(key, "dry-run") or strcmp(key, "n")) {
                 self.dry_run = true;
             } else if (strcmp(key, "help") or strcmp(key, "h")) {
@@ -425,7 +433,7 @@ pub fn main(init: std.process.Init) !void {
     var zip_bytes: []u8 = undefined;
     var buf: [4096]u8 = undefined;
 
-    {
+    if (config.from_zip == null) {
         @memcpy(buf[0..].ptr, godot_rev.download_url);
         const query_str_len = try uriQueryFromConfig(config, buf[godot_rev.download_url.len..]);
         const uri_str = buf[0 .. godot_rev.download_url.len + query_str_len];
@@ -450,16 +458,23 @@ pub fn main(init: std.process.Init) !void {
         }
 
         zip_bytes = try res_writer.toOwnedSlice();
+
+        log.debug("zip_bytes len: {d}", .{zip_bytes.len});
+        log.info("download complete", .{});
     }
 
-    log.debug("zip_bytes len: {d}", .{zip_bytes.len});
-    log.info("download complete", .{});
 
     var temp_dir = try openTempDir(io, environ);
     defer temp_dir.close(io);
-    var zip_file = try temp_dir.createFile(io, "gup-godot.zip", .{ .truncate = true, .read = true });
+    var zip_file = blk: {
+        if (config.from_zip) |zip_path| {
+            break :blk try temp_dir.openFile(io, zip_path, .{});
+        }
+        const f = try temp_dir.createFile(io, "gup-godot.zip", .{ .truncate = true, .read = true });
+        try f.writeStreamingAll(io, zip_bytes);
+        break :blk f;
+    };
     errdefer zip_file.close(io);
-    try zip_file.writeStreamingAll(io, zip_bytes);
     var zip_reader = zip_file.reader(io, &buf);
 
     const dest_dir = try std.Io.Dir.openDirAbsolute(io, config.install_path, .{});
@@ -483,7 +498,7 @@ pub fn main(init: std.process.Init) !void {
 
             // TODO better way to identify main binary
             if (config.setup_links) {
-                const console = if (std.mem.find(u8, filename, "console")) |_| "-console" else "";
+                const console = if (std.mem.find(u8, filename, "console")) |_| "_console" else "";
                 const flavor = config.linkSuffix();
                 const ext = if (builtin.os.tag == .windows) ".exe" else "";
 
