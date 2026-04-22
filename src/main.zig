@@ -17,6 +17,9 @@ const usage =
     \\  --link-name=[STR],    -o   Base name for symlinks when --setup-links is true. (godot)
     \\  --from-zip=[STR],     -z   Unpack zip at [STR] instead of downloading a release from godotengine.org
     \\  --help,               -h   Show this menu
+    \\
+    \\  build:
+    ++ @tagName(builtin.mode)
 ;
 
 const Config = struct {
