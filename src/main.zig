@@ -6,8 +6,9 @@ const assert = std.debug.assert;
 const log = std.log.scoped(.gup);
 
 const usage =
-    \\gup [OPTIONS]
+    \\gup [OPTIONS] --version=[STR]
     \\
+    \\  --version=[STR],      -v   Specify a version. Required.
     \\  --platform=[V],       -p   Specify a platform [windows, linux, macos, web, android, horizon, pico] (host)
     \\  --arch=[V],           -a   Specify an architecture [x64, x32, arm64, arm32, universal] (host)
     \\  --script=[V],         -s   Specify script support [gdscript*, dotnet]
@@ -16,11 +17,11 @@ const usage =
     \\  --setup-links=[bool], -l   Create flavor-delineated symlink to main binary. ie godot ->  Godot_4.6.2.win64.exe
     \\  --link-name=[STR],    -o   Base name for symlinks when --setup-links is true. (godot)
     \\  --from-zip=[STR],     -z   Unpack zip at [STR] instead of downloading a release from godotengine.org
+    \\  --verbose,            -V   Be more verbose
     \\  --help,               -h   Show this menu
     \\
     \\  build:
-    ++ @tagName(builtin.mode)
-;
+++ @tagName(builtin.mode);
 
 const Config = struct {
     platform: Platform,
@@ -33,6 +34,7 @@ const Config = struct {
     setup_links: bool,
     link_name: []const u8,
     from_zip: ?[]const u8,
+    verbose: bool,
     dry_run: bool,
 
     pub fn initDefault(self: *Config) void {
@@ -59,6 +61,7 @@ const Config = struct {
             .setup_links = true,
             .link_name = "godot",
             .from_zip = null,
+            .verbose = builtin.mode == .Debug,
             .dry_run = false,
         };
     }
@@ -100,6 +103,9 @@ const Config = struct {
         }
         if (env.get("GUP_FROM_ZIP")) |from_zip| {
             self.from_zip = from_zip;
+        }
+        if (env.get("GUP_VERBOSE")) |verbose| {
+            self.verbose = readBoolOption(verbose);
         }
     }
 
@@ -158,6 +164,8 @@ const Config = struct {
                 self.link_name = value;
             } else if (strcmp(key, "from-zip") or strcmp(key, "z")) {
                 self.from_zip = value;
+            } else if (strcmp(key, "verbose") or strcmp(key, "V")) {
+                self.verbose = true;
             } else if (strcmp(key, "dry-run") or strcmp(key, "n")) {
                 self.dry_run = true;
             } else if (strcmp(key, "help") or strcmp(key, "h")) {
@@ -431,7 +439,8 @@ pub fn main(init: std.process.Init) !void {
     }
     try config.resolve(arena, environ);
 
-    log.debug("resolved config: {f}", .{config});
+    if (config.verbose)
+        log.info("resolved config: {f}", .{config});
 
     var zip_bytes: []u8 = undefined;
     var buf: [4096]u8 = undefined;
@@ -462,10 +471,10 @@ pub fn main(init: std.process.Init) !void {
 
         zip_bytes = try res_writer.toOwnedSlice();
 
-        log.debug("zip_bytes len: {d}", .{zip_bytes.len});
+        if (config.verbose)
+            log.info("zip_bytes len: {d}", .{zip_bytes.len});
         log.info("download complete", .{});
     }
-
 
     var temp_dir = try openTempDir(io, environ);
     defer temp_dir.close(io);
@@ -497,16 +506,17 @@ pub fn main(init: std.process.Init) !void {
                 },
             };
             const filename = filename_buf[0..entry.filename_len];
-            log.info("extracted {s}", .{filename});
+            if (config.verbose)
+                log.info("extracted {s}", .{filename});
 
             // TODO better way to identify main binary
+            // This doesn't link the main binary on dotnet builds
             if (config.setup_links) {
                 const console = if (std.mem.find(u8, filename, "console")) |_| "_console" else "";
-                const flavor = config.linkSuffix();
                 const ext = if (builtin.os.tag == .windows) ".exe" else "";
 
                 var symlink_path_buf: [64]u8 = undefined;
-                const symlink_path = try std.fmt.bufPrint(&symlink_path_buf, "{s}{s}{s}{s}", .{ config.link_name, console, flavor, ext });
+                const symlink_path = try std.fmt.bufPrint(&symlink_path_buf, "{s}{s}{s}", .{ config.link_name, console, ext });
 
                 // try this?
                 const should_link = blk: {
@@ -536,7 +546,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (config.setup_links) {
-        log.info("symlinked binaries to {s}{s}", .{ config.link_name, config.linkSuffix() });
+        log.info("symlinked binaries to {s}", .{config.link_name});
     }
 
     zip_file.close(io);
