@@ -424,6 +424,16 @@ fn resolveInstallPath(arena: std.mem.Allocator, path: []const u8, environ: std.p
     return std.fs.path.join(arena, &.{ home, path[1..] });
 }
 
+fn likelyMainBinary(name: []const u8) bool {
+    if (std.mem.endsWith(u8, name, &.{std.fs.path.sep})) return false;
+    const ext = std.fs.path.extension(name);
+    if (std.mem.eql(u8, ext, ".exe")) return true;
+    if (std.mem.eql(u8, ext, ".x86_64")) return true;
+    if (std.mem.eql(u8, ext, ".arm64")) return true;
+    if (std.mem.find(u8, name, "console") != null) return true;
+    return false;
+}
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
@@ -477,10 +487,10 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var temp_dir = try openTempDir(io, environ);
-    defer temp_dir.close(io);
+    errdefer temp_dir.close(io);
     var zip_file = blk: {
         if (config.from_zip) |zip_path| {
-            break :blk try temp_dir.openFile(io, zip_path, .{});
+            break :blk try std.Io.Dir.cwd().openFile(io, zip_path, .{});
         }
         const f = try temp_dir.createFile(io, "gup-godot.zip", .{ .truncate = true, .read = true });
         try f.writeStreamingAll(io, zip_bytes);
@@ -490,7 +500,7 @@ pub fn main(init: std.process.Init) !void {
     var zip_reader = zip_file.reader(io, &buf);
 
     const dest_dir = try std.Io.Dir.openDirAbsolute(io, config.install_path, .{});
-    defer dest_dir.close(io);
+    errdefer dest_dir.close(io);
     log.info("extracting to {s}", .{config.install_path});
     {
         var filename_buf: [512]u8 = undefined;
@@ -509,16 +519,17 @@ pub fn main(init: std.process.Init) !void {
             if (config.verbose)
                 log.info("extracted {s}", .{filename});
 
-            // TODO better way to identify main binary
-            // This doesn't link the main binary on dotnet builds
-            if (config.setup_links) {
+            const likely_main_bin = likelyMainBinary(filename);
+            if (config.verbose and likely_main_bin)
+                log.info("likely main bin {s}", .{ filename });
+
+            if (config.setup_links and likely_main_bin) {
                 const console = if (std.mem.find(u8, filename, "console")) |_| "_console" else "";
                 const ext = if (builtin.os.tag == .windows) ".exe" else "";
 
                 var symlink_path_buf: [64]u8 = undefined;
                 const symlink_path = try std.fmt.bufPrint(&symlink_path_buf, "{s}{s}{s}", .{ config.link_name, console, ext });
 
-                // try this?
                 const should_link = blk: {
                     if (dest_dir.statFile(io, symlink_path, .{ .follow_symlinks = false })) |stat| {
                         if (stat.kind != .sym_link) {
@@ -541,6 +552,12 @@ pub fn main(init: std.process.Init) !void {
                         log.err("unable to link {s} -> {s}: {t}", .{ symlink_path, filename, err });
                     };
                 }
+            }
+
+            if (builtin.os.tag == .linux and likely_main_bin) {
+                const file = try dest_dir.openFile(io, filename, .{ .mode = .write_only });
+                try file.setPermissions(io, .fromMode(0o744));
+                file.close(io);
             }
         }
     }
