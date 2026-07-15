@@ -18,6 +18,7 @@ const usage =
     \\  --link-name=[STR],    -o   Base name for symlinks when --setup-links is true. (godot)
     \\  --from-zip=[STR],     -z   Unpack zip at [STR] instead of downloading a release from godotengine.org
     \\  --verbose,            -V   Be more verbose
+    \\  --dry-run,            -n   Print the url that would be fetched, but do not fetch anything.
     \\  --help,               -h   Show this menu
     \\
     \\  build:
@@ -299,6 +300,9 @@ const Config = struct {
             \\  install_path: {s}
             \\  setup_links: {}
             \\  link_name: {s}
+            \\  from_zip: {?s}
+            \\  verbose: {},
+            \\  dry-run: {},
             \\}}
         ,
             .{
@@ -310,6 +314,9 @@ const Config = struct {
                 self.install_path,
                 self.setup_links,
                 self.link_name,
+                self.from_zip,
+                self.verbose,
+                self.dry_run,
             },
         );
     }
@@ -490,6 +497,10 @@ pub fn main(init: std.process.Init) !void {
     errdefer temp_dir.close(io);
     var zip_file = blk: {
         if (config.from_zip) |zip_path| {
+            if (config.dry_run) {
+                log.info("attempting to extract from: {s}", .{ zip_path });
+                return;
+            }
             break :blk try std.Io.Dir.cwd().openFile(io, zip_path, .{});
         }
         const f = try temp_dir.createFile(io, "gup-godot.zip", .{ .truncate = true, .read = true });
