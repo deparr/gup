@@ -5,10 +5,10 @@ const assert = std.debug.assert;
 
 const log = std.log.default;
 
-const usage =
-    \\gup [OPTIONS] --version=[STR]
+const usage = std.fmt.comptimePrint(
+    \\gup [OPTIONS]
     \\
-    \\  --version=[STR],      -v   Specify a version. Required.
+    \\  --version=[STR],      -v   Specify a version. ({s})
     \\  --platform=[V],       -p   Specify a platform [windows, linux, macos, web, android, horizon, pico] (host)
     \\  --arch=[V],           -a   Specify an architecture [x64, x32, arm64, arm32, universal] (host)
     \\  --script=[V],         -s   Specify script support [gdscript*, dotnet]
@@ -22,8 +22,8 @@ const usage =
     \\  --dry-run,            -n   Print the url that would be fetched, but do not fetch anything.
     \\  --help,               -h   Show this menu
     \\
-    \\  build:
-++ @tagName(builtin.mode);
+    \\  build: {t}
+    , .{ godot_rev.latest_stable, builtin.mode });
 
 const Config = struct {
     platform: Platform,
