@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const godot_rev = @import("godot_rev");
 const assert = std.debug.assert;
 
-const log = std.log.scoped(.gup);
+const log = std.log.default;
 
 const usage =
     \\gup [OPTIONS] --version=[STR]
@@ -15,8 +15,9 @@ const usage =
     \\  --flavor=[STR],       -f   Specify a build flavor (stable)
     \\  --install-path=[STR], -i   Specify binary location (win: ~/AppData/Roaming/gup, else: ~/.local/bin)
     \\  --setup-links=[bool], -l   Create flavor-delineated symlink to main binary. ie godot ->  Godot_4.6.2.win64.exe
-    \\  --link-name=[STR],    -o   Base name for symlinks when --setup-links is true. (godot)
+    \\  --link-name=[STR],    -o   Base name for symlinks when --setup-links is true (godot)
     \\  --from-zip=[STR],     -z   Unpack zip at [STR] instead of downloading a release from godotengine.org
+    \\  --self-contained,     -S   Install Godot in self-contained mode, creating a portable installtion
     \\  --verbose,            -V   Be more verbose
     \\  --dry-run,            -n   Print the url that would be fetched, but do not fetch anything.
     \\  --help,               -h   Show this menu
@@ -37,6 +38,7 @@ const Config = struct {
     from_zip: ?[]const u8,
     verbose: bool,
     dry_run: bool,
+    self_contained: bool,
 
     pub fn initDefault(self: *Config) void {
         self.* = .{
@@ -64,6 +66,7 @@ const Config = struct {
             .from_zip = null,
             .verbose = builtin.mode == .Debug,
             .dry_run = false,
+            .self_contained = false,
         };
     }
 
@@ -107,6 +110,9 @@ const Config = struct {
         }
         if (env.get("GUP_VERBOSE")) |verbose| {
             self.verbose = readBoolOption(verbose);
+        }
+        if (env.get("GUP_SELF_CONTAINED")) |sc_mode| {
+            self.self_contained = readBoolOption(sc_mode);
         }
     }
 
@@ -165,6 +171,8 @@ const Config = struct {
                 self.link_name = value;
             } else if (strcmp(key, "from-zip") or strcmp(key, "z")) {
                 self.from_zip = value;
+            } else if (strcmp(key, "self-contained") or strcmp(key, "S")) {
+                self.self_contained = true;
             } else if (strcmp(key, "verbose") or strcmp(key, "V")) {
                 self.verbose = true;
             } else if (strcmp(key, "dry-run") or strcmp(key, "n")) {
@@ -302,7 +310,8 @@ const Config = struct {
             \\  link_name: {s}
             \\  from_zip: {?s}
             \\  verbose: {},
-            \\  dry-run: {},
+            \\  dry_run: {},
+            \\  self_contained: {},
             \\}}
         ,
             .{
@@ -317,6 +326,7 @@ const Config = struct {
                 self.from_zip,
                 self.verbose,
                 self.dry_run,
+                self.self_contained,
             },
         );
     }
@@ -498,7 +508,7 @@ pub fn main(init: std.process.Init) !void {
     var zip_file = blk: {
         if (config.from_zip) |zip_path| {
             if (config.dry_run) {
-                log.info("attempting to extract from: {s}", .{ zip_path });
+                log.info("attempting to extract from: {s}", .{zip_path});
                 return;
             }
             break :blk try std.Io.Dir.cwd().openFile(io, zip_path, .{});
@@ -532,7 +542,7 @@ pub fn main(init: std.process.Init) !void {
 
             const likely_main_bin = likelyMainBinary(filename);
             if (config.verbose and likely_main_bin)
-                log.info("likely main bin {s}", .{ filename });
+                log.info("likely main bin {s}", .{filename});
 
             if (config.setup_links and likely_main_bin) {
                 const console = if (std.mem.find(u8, filename, "console")) |_| "_console" else "";
@@ -575,6 +585,16 @@ pub fn main(init: std.process.Init) !void {
 
     if (config.setup_links) {
         log.info("symlinked binaries to {s}", .{config.link_name});
+    }
+
+    if (config.self_contained) {
+        if (dest_dir.createFile(io, "_sc_", .{})) |sc| {
+            sc.close(io);
+            log.info("installed in self-contained mode, remove '_sc_' from install dir to revert", .{});
+        } else |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => log.err("unable to create self contained marker: {t}", .{err}),
+        }
     }
 
     zip_file.close(io);
