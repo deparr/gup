@@ -32,7 +32,6 @@ const Config = struct {
     version: Version,
     flavor: []const u8,
     install_path: []const u8,
-    /// cli only option
     setup_links: bool,
     link_name: []const u8,
     from_zip: ?[]const u8,
@@ -46,7 +45,6 @@ const Config = struct {
                 .windows => .windows,
                 .linux => .linux,
                 .macos => .macos,
-                // default to windows
                 else => .windows,
             },
             .arch = switch (builtin.cpu.arch) {
@@ -54,7 +52,6 @@ const Config = struct {
                 .x86 => .x32,
                 .aarch64 => .arm64,
                 .arm => .arm32,
-                // default to x86_64
                 else => .x64,
             },
             .script = .gdscript,
