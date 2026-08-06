@@ -8,7 +8,7 @@ const log = std.log.default;
 const usage = std.fmt.comptimePrint(
     \\gup [OPTIONS]
     \\
-    \\  --version=[STR],      -v   Specify a version. ({s})
+    \\  --version=[STR],      -v   Specify a version. *Required*
     \\  --platform=[V],       -p   Specify a platform [windows, linux, macos, web, android, horizon, pico] (host)
     \\  --arch=[V],           -a   Specify an architecture [x64, x32, arm64, arm32, universal] (host)
     \\  --script=[V],         -s   Specify script support [gdscript*, dotnet]
@@ -23,7 +23,7 @@ const usage = std.fmt.comptimePrint(
     \\  --help,               -h   Show this menu
     \\
     \\  build: {t}
-    , .{ godot_rev.latest_stable, builtin.mode });
+, .{builtin.mode});
 
 const Config = struct {
     platform: Platform,
@@ -55,7 +55,7 @@ const Config = struct {
                 else => .x64,
             },
             .script = .gdscript,
-            .version = Version.parse(godot_rev.latest_stable) catch unreachable,
+            .version = .empty,
             .flavor = "stable",
             .install_path = if (builtin.os.tag == .windows) "~/AppData/Roaming/gup" else "~/.local/bin",
             .setup_links = true,
@@ -283,6 +283,10 @@ const Config = struct {
         }
     }
 
+    pub fn validate(self: *Config) !void {
+        if (self.version.equal(.empty)) return error.MissingVersion;
+    }
+
     pub fn linkSuffix(self: *const Config) []const u8 {
         if (strcmp(self.flavor, "stable")) {
             return "";
@@ -356,6 +360,8 @@ const Config = struct {
         minor: u32,
         patch: ?u32,
 
+        pub const empty: Version = .{ .major = 0, .minor = 0, .patch = 0 };
+
         pub fn parse(str: []const u8) !Version {
             var it = std.mem.splitScalar(u8, str, '.');
             return Version{
@@ -370,6 +376,12 @@ const Config = struct {
             if (self.patch) |p| {
                 try writer.print(".{d}", .{p});
             }
+        }
+
+        pub fn equal(self: Version, other: Version) bool {
+            return self.major == other.major and
+                self.minor == other.minor and
+                self.patch == other.patch;
         }
 
         fn parseNum(str: ?[]const u8) !?u32 {
@@ -462,6 +474,16 @@ pub fn main(init: std.process.Init) !void {
         try config.initCliArgs(&it);
     }
     try config.resolve(arena, environ);
+    config.validate() catch |err| {
+        var stderr = std.Io.File.stderr().writer(io, &.{});
+        switch (err) {
+            error.MissingVersion => {
+                try stderr.interface.print("error: Missing required option 'version'\n", .{});
+            },
+        }
+        try stderr.interface.writeAll("\ntry 'gup --help'");
+        std.process.exit(1);
+    };
 
     if (config.verbose)
         log.info("resolved config: {f}", .{config});
