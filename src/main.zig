@@ -29,17 +29,6 @@ fn openTempDir(io: std.Io, environ: *std.process.Environ.Map) !std.Io.Dir {
     return std.Io.Dir.openDirAbsolute(io, path, .{});
 }
 
-fn resolveInstallPath(arena: std.mem.Allocator, path: []const u8, environ: std.process.EnvMap) ![]const u8 {
-    if (std.fs.path.isAbsolute(path)) return path;
-    if (path.len < 1 or path[0] != '~') return error.NonAbsoluteInstallpath;
-
-    const home = switch (builtin.os.tag) {
-        .windows => environ.get("USERPROFILE"),
-        else => environ.get("HOME"),
-    } orelse return error.MissingHomeVar;
-    return std.fs.path.join(arena, &.{ home, path[1..] });
-}
-
 fn likelyMainBinary(name: []const u8) bool {
     if (std.mem.endsWith(u8, name, &.{std.fs.path.sep})) return false;
     const ext = std.fs.path.extension(name);
@@ -67,11 +56,10 @@ pub fn main(init: std.process.Init) !void {
     config.validate() catch |err| {
         var stderr = std.Io.File.stderr().writer(io, &.{});
         switch (err) {
-            error.MissingVersion => {
-                try stderr.interface.print("error: Missing required option 'version'\n", .{});
-            },
+            error.MissingVersion => try stderr.interface.print("error: Missing required option 'version'", .{}),
+            error.InvalidPath => try stderr.interface.print("error: Invalid install path '{s}'", .{ config.install_path }),
         }
-        try stderr.interface.writeAll("\ntry 'gup --help'");
+        try stderr.interface.writeAll("\n\ntry gup --help");
         std.process.exit(1);
     };
 
@@ -127,7 +115,7 @@ pub fn main(init: std.process.Init) !void {
     errdefer zip_file.close(io);
     var zip_reader = zip_file.reader(io, &buf);
 
-    const dest_dir = try std.Io.Dir.openDirAbsolute(io, config.install_path, .{});
+    const dest_dir = try std.Io.Dir.cwd().openDir(io, config.install_path, .{});
     errdefer dest_dir.close(io);
     log.info("extracting to {s}", .{config.install_path});
     {
@@ -137,6 +125,7 @@ pub fn main(init: std.process.Init) !void {
             entry.extract(&zip_reader, .{}, &filename_buf, dest_dir) catch |err| switch (err) {
                 error.PathAlreadyExists => {
                     log.info("{s} already exists, skipping", .{filename_buf[0..entry.filename_len]});
+                    continue;
                 },
                 else => {
                     log.err("while extracting: {t}", .{err});

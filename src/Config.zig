@@ -311,31 +311,22 @@ fn platformQuery(self: Config) ?[]const u8 {
 }
 
 pub fn resolve(self: *Config, arena: std.mem.Allocator, environ: *std.process.Environ.Map) !void {
-    if (!std.fs.path.isAbsolute(self.install_path)) {
+    if (!std.fs.path.isAbsolute(self.install_path) and self.install_path.len > 0) {
         const path = self.install_path;
-        if (path.len < 1 or path[0] != '~') return error.NonAbsoluteInstallPath;
-        const home = switch (builtin.os.tag) {
-            .windows => environ.get("USERPROFILE"),
-            else => environ.get("HOME"),
-        } orelse return error.MissingHomeVar;
+        if (path[0] == '~') {
+            const home = switch (builtin.os.tag) {
+                .windows => environ.get("USERPROFILE"),
+                else => environ.get("HOME"),
+            } orelse return error.MissingHomeVar;
 
-        self.install_path = try std.fs.path.join(arena, &.{ home, path[1..] });
+            self.install_path = try std.fs.path.join(arena, &.{ home, path[1..] });
+        }
     }
 }
 
 pub fn validate(self: *Config) !void {
+    if (self.install_path.len < 1) return error.InvalidPath;
     if (self.version.equal(.empty)) return error.MissingVersion;
-}
-
-pub fn linkSuffix(self: *const Config) []const u8 {
-    if (strcmp(self.flavor, "stable")) {
-        return "";
-    } else if (std.mem.find(u8, self.flavor, "dev")) |_| {
-        return "-dev";
-    } else if (std.mem.find(u8, self.flavor, "rc")) |_| {
-        return "-rc";
-    }
-    return self.flavor;
 }
 
 pub fn format(self: Config, writer: *std.Io.Writer) std.Io.Writer.Error!void {
