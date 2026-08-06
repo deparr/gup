@@ -66,54 +66,43 @@ pub fn main(init: std.process.Init) !void {
     if (config.verbose)
         log.info("resolved: {f}", .{config});
 
-    var zip_bytes: []u8 = undefined;
+    const cwd = std.Io.Dir.cwd();
+    var temp_dir = try openTempDir(io, environ);
     var buf: [4096]u8 = undefined;
+    var zip_file = blk: {
+        if (config.from_zip) |local_zip_path| {
+            log.info("extracting from {s}...", .{ local_zip_path });
+            if (config.dry_run) return;
+            break :blk try cwd.openFile(io, local_zip_path, .{});
+        }
 
-    if (config.from_zip == null) {
-        const uri_str = try config.makeUri(&buf);
+        var uri_buf: [1024]u8 = undefined;
+        const uri_str = try config.makeUri(&uri_buf);
         const uri = try std.Uri.parse(uri_str);
-
-        log.info("attempting to fetch uri: {s}...", .{uri_str});
-
+        log.info("attempting to fetch uri: {s}...", .{ uri_str });
         if (config.dry_run) return;
 
-        var res_writer = try std.Io.Writer.Allocating.initCapacity(arena, 10 * 1024 * 1024);
+        const temp_file = try temp_dir.createFile(io, "gup-godot.zip", .{ .truncate = true, .read = true });
+        var temp_file_writer = temp_file.writer(io, &buf);
         var client = std.http.Client{ .io = io, .allocator = arena };
         const res = try client.fetch(.{
             .method = .GET,
             .location = .{ .uri = uri },
-            .response_writer = &res_writer.writer,
+            .response_writer = &temp_file_writer.interface,
         });
-        client.deinit(); // this can leak if the fetch fails.
+        client.deinit();
 
         if (res.status != .ok) {
-            log.err("http error status: {t} {?s}", .{ res.status, res.status.phrase() });
+            log.err("http error: {t} {?s}", .{ res.status, res.status.phrase() });
             return;
         }
 
-        zip_bytes = try res_writer.toOwnedSlice();
 
-        if (config.verbose)
-            log.info("zip_bytes len: {d}", .{zip_bytes.len});
-        log.info("download complete", .{});
-    }
-
-    var temp_dir = try openTempDir(io, environ);
-    errdefer temp_dir.close(io);
-    var zip_file = blk: {
-        if (config.from_zip) |zip_path| {
-            if (config.dry_run) {
-                log.info("attempting to extract from: {s}", .{zip_path});
-                return;
-            }
-            break :blk try std.Io.Dir.cwd().openFile(io, zip_path, .{});
-        }
-        const f = try temp_dir.createFile(io, "gup-godot.zip", .{ .truncate = true, .read = true });
-        try f.writeStreamingAll(io, zip_bytes);
-        break :blk f;
+        break :blk temp_file;
     };
     errdefer zip_file.close(io);
     var zip_reader = zip_file.reader(io, &buf);
+    try zip_reader.seekTo(0);
 
     const dest_dir = try std.Io.Dir.cwd().openDir(io, config.install_path, .{});
     errdefer dest_dir.close(io);
