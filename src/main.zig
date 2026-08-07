@@ -66,8 +66,6 @@ pub fn main(init: std.process.Init) !void {
         if (config.from_zip) |zip_path| {
             log.info("would attempt to extract from local file: {s}", .{zip_path});
         } else {
-            // todo im using stack space *liberally*, should do a bit of
-            // analysis, if for nothing other than curiosity
             var buf: [256]u8 = undefined;
             log.info("would attempt to fetch from remote: {s}", .{try config.makeUri(&buf)});
         }
@@ -85,7 +83,8 @@ pub fn main(init: std.process.Init) !void {
             break :blk try cwd.openFile(io, local_zip_path, .{});
         }
 
-        if (try cache.packageIsValid(io, config.version, config.flavor, config.slug().?)) {
+        // todo hack
+        if (try cache.packageIsValid(io, config.version, config.flavor, config.slug().?, .{ .skip_hash = !std.mem.eql(u8, config.flavor, "stable") })) {
             log.debug("cache hit {f}-{s}_{s}", .{ config.version, config.flavor, config.slug().? });
             break :blk try cache.getPackageFile(io, config.version, config.flavor, config.slug().?);
         }
@@ -98,20 +97,23 @@ pub fn main(init: std.process.Init) !void {
         var zip_file_writer = cached_zip_file.writer(io, &buf);
         try fetchRemote(io, arena, uri_str, &zip_file_writer.interface);
 
-        // this is ass and a hack
-        if (cache.getPackageFile(io, config.version, config.flavor, cache.hash_file_name)) |f| {
-            f.close(io);
-        } else |err| switch (err) {
-            error.FileNotFound => {
-                const hash_file = try cache.createPackageFile(io, config.version, config.flavor, cache.hash_file_name);
-                defer hash_file.close(io);
-                var hash_file_writer = hash_file.writer(io, &buf);
-                uri_str = try std.fmt.bufPrint(&uri_buf, "{s}/{f}-{s}/SHA512-SUMS.txt", .{ download_urls.github, config.version, config.flavor });
-                try fetchRemote(io, arena, uri_str, &hash_file_writer.interface);
-            },
-            else => {
-                log.err("unable to create {f} hash file: {t}", .{ config.version, err });
-            },
+        // godot doesn't publish hashes for non tagged releases
+        if (std.mem.eql(u8, config.flavor, "stable")) {
+            // this is ass and a hack
+            if (cache.getPackageFile(io, config.version, config.flavor, cache.hash_file_name)) |f| {
+                f.close(io);
+            } else |err| switch (err) {
+                error.FileNotFound => {
+                    const hash_file = try cache.createPackageFile(io, config.version, config.flavor, cache.hash_file_name);
+                    defer hash_file.close(io);
+                    var hash_file_writer = hash_file.writer(io, &buf);
+                    uri_str = try std.fmt.bufPrint(&uri_buf, "{s}/{f}-{s}/SHA512-SUMS.txt", .{ download_urls.github, config.version, config.flavor });
+                    try fetchRemote(io, arena, uri_str, &hash_file_writer.interface);
+                },
+                else => {
+                    log.err("unable to create {f} hash file: {t}", .{ config.version, err });
+                },
+            }
         }
 
         break :blk cached_zip_file;

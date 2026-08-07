@@ -47,7 +47,11 @@ pub fn deinit(io: std.Io) void {
     if (has_root) |root| root.close(io);
 }
 
-pub fn packageIsValid(io: std.Io, version: Version, flavor: []const u8, slug: []const u8) !bool {
+pub const CacheCheckOptions = struct {
+    skip_hash: bool = false,
+};
+
+pub fn packageIsValid(io: std.Io, version: Version, flavor: []const u8, slug: []const u8, options: CacheCheckOptions) !bool {
     assert(has_root != null);
     const root = has_root orelse return error.NoCacheInit;
 
@@ -59,6 +63,14 @@ pub fn packageIsValid(io: std.Io, version: Version, flavor: []const u8, slug: []
     };
     defer version_dir.close(io);
 
+    const package_file = version_dir.openFile(io, slug, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    defer package_file.close(io);
+
+    if (options.skip_hash) return true;
+
     const hash_file = version_dir.openFile(io, hash_file_name, .{}) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
@@ -67,21 +79,14 @@ pub fn packageIsValid(io: std.Io, version: Version, flavor: []const u8, slug: []
 
     var package_digest: [Sha512.digest_length]u8 = undefined;
     var stream_buf: [1024 * 16]u8 = undefined;
-    {
-        const package_file = version_dir.openFile(io, slug, .{}) catch |err| switch (err) {
-            error.FileNotFound => return false,
-            else => return err,
-        };
-        defer package_file.close(io);
-        var package_reader = package_file.reader(io, &stream_buf);
+    var package_reader = package_file.reader(io, &stream_buf);
 
-        var hash_buf: [1024 * 16]u8 = undefined;
-        var hashing = std.Io.Writer.Hashing(Sha512).init(&hash_buf);
+    var hash_buf: [1024 * 16]u8 = undefined;
+    var hashing = std.Io.Writer.Hashing(Sha512).init(&hash_buf);
 
-        _ = try package_reader.interface.streamRemaining(&hashing.writer);
-        try hashing.writer.flush();
-        hashing.hasher.final(&package_digest);
-    }
+    _ = try package_reader.interface.streamRemaining(&hashing.writer);
+    try hashing.writer.flush();
+    hashing.hasher.final(&package_digest);
 
     var reader = hash_file.reader(io, &stream_buf);
     while (try reader.interface.takeDelimiter('\n')) |line| {
