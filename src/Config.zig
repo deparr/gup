@@ -14,7 +14,7 @@ pub const usage = std.fmt.comptimePrint(
     \\  --arch=[V],           -a   Specify an architecture [x64, x32, arm64, arm32, universal] (host)
     \\  --script=[V],         -s   Specify script support [gdscript*, dotnet]
     \\  --flavor=[STR],       -f   Specify a build flavor (stable)
-    \\  --install-path=[STR], -i   Specify binary location (win: ~/AppData/Roaming/gup, else: ~/.local/bin)
+    \\  --install-path=[STR], -i   Specify binary location (win: ~/AppData/local/gup, else: ~/.local/bin)
     \\  --setup-links=[bool], -l   Create flavor-delineated symlink to main binary. ie godot ->  Godot_4.6.2.win64.exe
     \\  --link-name=[STR],    -o   Base name for symlinks when --setup-links is true (godot)
     \\  --from-zip=[STR],     -z   Unpack zip at [STR] instead of downloading a release from godotengine.org
@@ -59,7 +59,7 @@ pub fn initDefault(self: *Config) void {
         .script = .gdscript,
         .version = .empty,
         .flavor = "stable",
-        .install_path = if (builtin.os.tag == .windows) "~/AppData/Roaming/gup" else "~/.local/bin",
+        .install_path = if (builtin.os.tag == .windows) "~/AppData/local/gup" else "~/.local/bin",
         .setup_links = true,
         .link_name = "godot",
         .from_zip = null,
@@ -268,6 +268,9 @@ pub fn makeUri(self: *const Config, buf: []u8) ![]const u8 {
     };
 }
 
+// fixme I hate that slug is still optional here
+// parsing the config should return a 'ConfigBuilder' type that
+// is validated and consumed into the real config
 fn makeGithubUri(self: *const Config, buf: []u8) ![]const u8 {
     const slug_ = self.slug() orelse return error.InvalidBuildConfig;
     return std.fmt.bufPrint(
@@ -310,38 +313,45 @@ fn platformQuery(self: Config) ?[]const u8 {
     };
 }
 
-pub fn resolve(self: *Config, arena: std.mem.Allocator, environ: *std.process.Environ.Map) !void {
-    if (!std.fs.path.isAbsolute(self.install_path) and self.install_path.len > 0) {
-        const path = self.install_path;
-        if (path[0] == '~') {
-            const home = switch (builtin.os.tag) {
-                .windows => environ.get("USERPROFILE"),
-                else => environ.get("HOME"),
-            } orelse return error.MissingHomeVar;
+fn expandHome(path: []const u8, arena: std.mem.Allocator, environ: *std.process.Environ.Map) ![]const u8 {
+    if (std.fs.path.isAbsolute(path) or path.len < 1 or path[0] != '~') {
+        return path;
+    }
 
-            self.install_path = try std.fs.path.join(arena, &.{ home, path[1..] });
-        }
+    const home = switch (builtin.os.tag) {
+        .windows => environ.get("USERPROFILE"),
+        else => environ.get("HOME"),
+    } orelse return error.MissingHomeVar;
+
+    return std.fs.path.join(arena, &.{ home, path[1..]});
+}
+
+pub fn resolve(self: *Config, arena: std.mem.Allocator, environ: *std.process.Environ.Map) !void {
+    self.install_path = try expandHome(self.install_path, arena, environ);
+    if (self.from_zip) |zip_path| {
+        self.from_zip = try expandHome(zip_path, arena, environ);
     }
 }
 
 pub fn validate(self: *Config) !void {
     if (self.install_path.len < 1) return error.InvalidPath;
     if (self.version.equal(.empty)) return error.MissingVersion;
+    if (self.slug() == null) return error.InvalidBuildConfig;
 }
 
 pub fn format(self: Config, writer: *std.Io.Writer) std.Io.Writer.Error!void {
     try writer.print(
         \\Config{{
-        \\  platform: {t}
-        \\  arch: {t}
-        \\  script: {t}
-        \\  version: {f}
-        \\  flavor: {s}
-        \\  install_path: {s}
-        \\  setup_links: {}
-        \\  link_name: {s}
-        \\  from_zip: {?s}
-        \\  source: {t}
+        \\  platform: {t},
+        \\  arch: {t},
+        \\  script: {t},
+        \\  version: {f},
+        \\  flavor: {s},
+        \\  install_path: {s},
+        \\  setup_links: {},
+        \\  link_name: {s},
+        \\  from_zip: {?s},
+        \\  source: {t},
         \\  verbose: {},
         \\  dry_run: {},
         \\  self_contained: {},

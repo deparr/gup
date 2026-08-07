@@ -1,33 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const godot_rev = @import("godot_rev");
+const download_urls = @import("download_urls");
 const Config = @import("Config.zig");
+const cache = @import("cache.zig");
 const assert = std.debug.assert;
 
 const log = std.log.default;
-
-fn openTempDir(io: std.Io, environ: *std.process.Environ.Map) !std.Io.Dir {
-    const path = switch (builtin.os.tag) {
-        .linux, .macos => "/tmp",
-        .windows => blk: {
-            if (environ.get("TEMP")) |temp| {
-                break :blk temp;
-            }
-            if (environ.get("TMP")) |temp| {
-                break :blk temp;
-            }
-            // use appdata, don't really likethis
-            log.info("falling back to $APPDATA", .{});
-            if (environ.get("APPDATA")) |temp| {
-                break :blk temp;
-            }
-            @panic("why can't I break :blk unreachable");
-        },
-        else => unreachable,
-    };
-
-    return std.Io.Dir.openDirAbsolute(io, path, .{});
-}
 
 fn likelyMainBinary(name: []const u8) bool {
     if (std.mem.endsWith(u8, name, &.{std.fs.path.sep})) return false;
@@ -37,6 +15,23 @@ fn likelyMainBinary(name: []const u8) bool {
     if (std.mem.eql(u8, ext, ".arm64")) return true;
     if (std.mem.find(u8, name, "console") != null) return true;
     return false;
+}
+
+fn fetchRemote(io: std.Io, arena: std.mem.Allocator, uri: []const u8, writer: *std.Io.Writer) !void {
+    log.info("fetching remote: {s}", .{ uri });
+    var client = std.http.Client{ .io = io, .allocator = arena };
+    defer client.deinit();
+    var res = try client.fetch(.{
+        .method = .GET,
+        .location = .{ .uri = try std.Uri.parse(uri) },
+        .response_writer = writer,
+        .keep_alive = false,
+    });
+    if (res.status != .ok) {
+        log.err("http error: {t} {?s}", .{ res.status, res.status.phrase() });
+        return error.FetchError;
+    }
+    try writer.flush();
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -57,7 +52,8 @@ pub fn main(init: std.process.Init) !void {
         var stderr = std.Io.File.stderr().writer(io, &.{});
         switch (err) {
             error.MissingVersion => try stderr.interface.print("error: Missing required option 'version'", .{}),
-            error.InvalidPath => try stderr.interface.print("error: Invalid install path '{s}'", .{ config.install_path }),
+            error.InvalidPath => try stderr.interface.print("error: Invalid install path '{s}'", .{config.install_path}),
+            else => try stderr.interface.print("error: {t}", .{err}),
         }
         try stderr.interface.writeAll("\n\ntry gup --help");
         std.process.exit(1);
@@ -66,39 +62,59 @@ pub fn main(init: std.process.Init) !void {
     if (config.verbose)
         log.info("resolved: {f}", .{config});
 
+    if (config.dry_run) {
+        if (config.from_zip) |zip_path| {
+            log.info("would attempt to extract from local file: {s}", .{zip_path});
+        } else {
+            // todo im using stack space *liberally*, should do a bit of
+            // analysis, if for nothing other than curiosity
+            var buf: [256]u8 = undefined;
+            log.info("would attempt to fetch from remote: {s}", .{try config.makeUri(&buf)});
+        }
+        return;
+    }
+
+    try cache.init(io, environ, &config);
+    defer cache.deinit(io);
+
     const cwd = std.Io.Dir.cwd();
-    var temp_dir = try openTempDir(io, environ);
     var buf: [4096]u8 = undefined;
     var zip_file = blk: {
         if (config.from_zip) |local_zip_path| {
-            log.info("extracting from {s}...", .{ local_zip_path });
-            if (config.dry_run) return;
+            log.info("unpacking from local zip: {s}", .{ local_zip_path });
             break :blk try cwd.openFile(io, local_zip_path, .{});
         }
 
-        var uri_buf: [1024]u8 = undefined;
-        const uri_str = try config.makeUri(&uri_buf);
-        const uri = try std.Uri.parse(uri_str);
-        log.info("attempting to fetch uri: {s}...", .{ uri_str });
-        if (config.dry_run) return;
-
-        const temp_file = try temp_dir.createFile(io, "gup-godot.zip", .{ .truncate = true, .read = true });
-        var temp_file_writer = temp_file.writer(io, &buf);
-        var client = std.http.Client{ .io = io, .allocator = arena };
-        const res = try client.fetch(.{
-            .method = .GET,
-            .location = .{ .uri = uri },
-            .response_writer = &temp_file_writer.interface,
-        });
-        client.deinit();
-
-        if (res.status != .ok) {
-            log.err("http error: {t} {?s}", .{ res.status, res.status.phrase() });
-            return;
+        if (try cache.packageIsValid(io, config.version, config.flavor, config.slug().?)) {
+            log.debug("cache hit {f}-{s}_{s}", .{ config.version, config.flavor, config.slug().? });
+            break :blk try cache.getPackageFile(io, config.version, config.flavor, config.slug().?);
         }
 
+        const cached_zip_file = try cache.createPackageFile(io, config.version, config.flavor, config.slug().?);
 
-        break :blk temp_file;
+        var uri_buf: [1024]u8 = undefined;
+        var uri_str = try config.makeUri(&uri_buf);
+
+        var zip_file_writer = cached_zip_file.writer(io, &buf);
+        try fetchRemote(io, arena, uri_str, &zip_file_writer.interface);
+
+        // this is ass and a hack
+        if (cache.getPackageFile(io, config.version, config.flavor, cache.hash_file_name)) |f| {
+            f.close(io);
+        } else |err| switch (err) {
+            error.FileNotFound => {
+                const hash_file = try cache.createPackageFile(io, config.version, config.flavor, cache.hash_file_name);
+                defer hash_file.close(io);
+                var hash_file_writer = hash_file.writer(io, &buf);
+                uri_str = try std.fmt.bufPrint(&uri_buf, "{s}/{f}-{s}/SHA512-SUMS.txt", .{ download_urls.github, config.version, config.flavor });
+                try fetchRemote(io, arena, uri_str, &hash_file_writer.interface);
+            },
+            else => {
+                log.err("unable to create {f} hash file: {t}", .{ config.version, err });
+            },
+        }
+
+        break :blk cached_zip_file;
     };
     errdefer zip_file.close(io);
     var zip_reader = zip_file.reader(io, &buf);
@@ -183,6 +199,5 @@ pub fn main(init: std.process.Init) !void {
     }
 
     zip_file.close(io);
-    temp_dir.close(io);
     dest_dir.close(io);
 }
