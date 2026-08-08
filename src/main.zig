@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const download_urls = @import("download_urls");
 const Config = @import("Config.zig");
 const cache = @import("cache.zig");
+const progress = @import("progress.zig");
 const assert = std.debug.assert;
 
 const log = std.log.default;
@@ -17,20 +18,46 @@ fn likelyMainBinary(name: []const u8) bool {
     return false;
 }
 
-fn fetchRemote(io: std.Io, arena: std.mem.Allocator, uri: []const u8, writer: *std.Io.Writer) !void {
+/// spins until canceled
+fn spin(io: std.Io) void {
+    var spinner = progress.Spinner.init();
+    
+    std.debug.print("\x1b[?25l", .{}); // hide cursor
+    while (io.sleep(.fromMilliseconds(100), .awake)) |_| {
+        std.debug.print("\x1b[2K\r", .{});
+        std.debug.print("downloading... {s}", .{ spinner.frame() });
+        spinner.next();
+    } else |_| {}
+    std.debug.print("\x1b[2K\r", .{});
+    std.debug.print("\x1b[?25h", .{}); // show cursor
+}
+
+fn fetchRemote(io: std.Io, arena: std.mem.Allocator, uri: []const u8, writer: *std.Io.Writer, display_progress: bool) !void {
     log.info("fetching remote: {s}", .{ uri });
+
     var client = std.http.Client{ .io = io, .allocator = arena };
     defer client.deinit();
-    var res = try client.fetch(.{
-        .method = .GET,
-        .location = .{ .uri = try std.Uri.parse(uri) },
-        .response_writer = writer,
-        .keep_alive = false,
-    });
-    if (res.status != .ok) {
-        log.err("http error: {t} {?s}", .{ res.status, res.status.phrase() });
+
+    var req = try client.request(.GET, try std.Uri.parse(uri), .{ .keep_alive = false });
+    defer req.deinit();
+    try req.sendBodiless();
+
+    var head_buf: [8192]u8 = undefined;
+    var res = try req.receiveHead(&head_buf);
+    if (res.head.status != .ok) {
+        log.err("http error: {t} {?s}", .{ res.head.status, res.head.status.phrase() });
         return error.FetchError;
     }
+
+    log.debug("remote file has len: {?d}", .{ res.head.content_length });
+
+    var spinner: ?std.Io.Future(void) = null;
+    if (display_progress) spinner = io.async(spin, .{ io });
+    defer if (spinner) |*f| f.cancel(io);
+
+    var body_buf: [8192]u8 = undefined;
+    var body_reader = res.reader(&body_buf);
+    _ = try body_reader.streamRemaining(writer);
     try writer.flush();
 }
 
@@ -38,6 +65,13 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
     const environ = init.environ_map;
+    if (builtin.os.tag == .windows) {
+        var handle = std.os.windows.CONSOLE.USER_IO.SET_CP(.Output, 65001);
+        const status = try handle.operate(io, null);
+        if (status != .SUCCESS) {
+            log.warn("unable to enable unicode code page, unicode might display incorrectly", .{});
+        }
+    }
 
     // resolve the config from defaults -> environment -> cli args
     var config: Config = undefined;
@@ -75,6 +109,8 @@ pub fn main(init: std.process.Init) !void {
     try cache.init(io, environ, &config);
     defer cache.deinit(io);
 
+    const display_pretty = try std.Io.File.stderr().isTty(io);
+
     const cwd = std.Io.Dir.cwd();
     var buf: [4096]u8 = undefined;
     var zip_file = blk: {
@@ -95,7 +131,7 @@ pub fn main(init: std.process.Init) !void {
         var uri_str = try config.makeUri(&uri_buf);
 
         var zip_file_writer = cached_zip_file.writer(io, &buf);
-        try fetchRemote(io, arena, uri_str, &zip_file_writer.interface);
+        try fetchRemote(io, arena, uri_str, &zip_file_writer.interface, display_pretty);
 
         // godot doesn't publish hashes for non tagged releases
         if (std.mem.eql(u8, config.flavor, "stable")) {
@@ -108,7 +144,7 @@ pub fn main(init: std.process.Init) !void {
                     defer hash_file.close(io);
                     var hash_file_writer = hash_file.writer(io, &buf);
                     uri_str = try std.fmt.bufPrint(&uri_buf, "{s}/{f}-{s}/SHA512-SUMS.txt", .{ download_urls.github, config.version, config.flavor });
-                    try fetchRemote(io, arena, uri_str, &hash_file_writer.interface);
+                    try fetchRemote(io, arena, uri_str, &hash_file_writer.interface, display_pretty);
                 },
                 else => {
                     log.err("unable to create {f} hash file: {t}", .{ config.version, err });
