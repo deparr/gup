@@ -2,8 +2,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Config = @import("Config.zig");
 const hex = @import("hex.zig");
-const Version = Config.Version;
 
+const Io = std.Io;
+const Allocator = std.mem.Allocator;
+const PackageSpec = Config.PackageSpec;
+const Version = Config.Version;
+const CacheCommand = Config.Command.Cache;
 const path = std.fs.path;
 const assert = std.debug.assert;
 const Sha512 = std.crypto.hash.sha2.Sha512;
@@ -15,7 +19,15 @@ pub const hash_file_name = "sha512-sums.txt";
 
 var has_root: ?std.Io.Dir = null;
 
-pub fn init(io: std.Io, environ: *std.process.Environ.Map, config: *const Config) !void {
+pub fn command(io: Io, arena: Allocator, options: CacheCommand, verbose: bool, dry_run: bool) !void {
+    _ = io;
+    _ = arena;
+    _ = options;
+    _ = verbose;
+    _ = dry_run;
+}
+
+pub fn init(io: std.Io, environ: *std.process.Environ.Map, verbose: bool) !void {
     if (has_root) |_| return;
     const root_path = blk: {
         if (environ.get("GUP_CACHE_HOME")) |gup_cache| break :blk gup_cache;
@@ -39,31 +51,34 @@ pub fn init(io: std.Io, environ: *std.process.Environ.Map, config: *const Config
         return error.CacheInit;
     };
 
-    if (config.verbose)
+    if (verbose)
         log.info("using cache dir {s}", .{root_path});
 }
 
 pub fn deinit(io: std.Io) void {
-    if (has_root) |root| root.close(io);
+    if (has_root) |root| {
+        root.close(io);
+        has_root = null;
+    }
 }
 
 pub const CacheCheckOptions = struct {
     skip_hash: bool = false,
 };
 
-pub fn packageIsValid(io: std.Io, version: Version, flavor: []const u8, slug: []const u8, options: CacheCheckOptions) !bool {
+pub fn packageIsValid(io: std.Io, spec: PackageSpec, options: CacheCheckOptions) !bool {
     assert(has_root != null);
     const root = has_root orelse return error.NoCacheInit;
 
     var path_buf: [256]u8 = undefined;
-    const version_dir_path = try std.fmt.bufPrint(&path_buf, "{f}-{s}", .{ version, flavor });
+    const version_dir_path = try std.fmt.bufPrint(&path_buf, "{f}-{s}", .{ spec.version, spec.version.flavor });
     const version_dir = root.openDir(io, version_dir_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
     };
     defer version_dir.close(io);
 
-    const package_file = version_dir.openFile(io, slug, .{}) catch |err| switch (err) {
+    const package_file = version_dir.openFile(io, spec.slug, .{}) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
     };
@@ -95,7 +110,7 @@ pub fn packageIsValid(io: std.Io, version: Version, flavor: []const u8, slug: []
         const true_digest = iter.next() orelse return false;
         const id = iter.next() orelse return false;
 
-        if (std.mem.find(u8, id, slug) == null) continue;
+        if (std.mem.find(u8, id, spec.slug) == null) continue;
 
         const decoded_digest = hex.encode(&package_digest, Sha512.digest_length * 2);
         return std.ascii.eqlIgnoreCase(&decoded_digest, true_digest);
@@ -104,33 +119,34 @@ pub fn packageIsValid(io: std.Io, version: Version, flavor: []const u8, slug: []
     return false;
 }
 
-pub fn getPackageFile(io: std.Io, version: Version, flavor: []const u8, slug: []const u8) !std.Io.File {
+pub fn getPackageFile(io: std.Io, version: Version, sub_path: []const u8) !std.Io.File {
     assert(has_root != null);
     const root = has_root orelse return error.NoCacheInit;
     var path_buf: [256]u8 = undefined;
-    const package_path = try std.fmt.bufPrint(&path_buf, "{f}-{s}/{s}", .{ version, flavor, slug });
+    const package_path = try std.fmt.bufPrint(&path_buf, "{f}-{s}/{s}", .{ version, version.flavor, sub_path });
     return root.openFile(io, package_path, .{});
 }
 
-pub fn createPackageFile(io: std.Io, version: Version, flavor: []const u8, slug: []const u8) !std.Io.File {
+pub fn createPackageFile(io: std.Io, version: Version, sub_path: []const u8) !std.Io.File {
     assert(has_root != null);
     const root = has_root orelse return error.NoCacheInit;
     var path_buf: [256]u8 = undefined;
-    const version_path = try std.fmt.bufPrint(&path_buf, "{f}-{s}", .{ version, flavor });
+    const version_path = try std.fmt.bufPrint(&path_buf, "{f}-{s}", .{ version, version.flavor });
     const version_dir = try root.createDirPathOpen(io, version_path, .{});
     defer version_dir.close(io);
-    return version_dir.createFile(io, slug, .{ .read = true });
+    return version_dir.createFile(io, sub_path, .{ .read = true });
 }
 
-pub fn putPackage(io: std.Io, version: Version, flavor: []const u8, slug: []const u8, data: []const u8) !void {
+pub fn putPackage(io: std.Io, version: Version, sub_path: []const u8, data: []const u8) !void {
     assert(has_root != null);
     const root = has_root orelse return error.NoCacheInit;
     var buf: [16 * 1024]u8 = undefined;
-    const version_path = try std.fmt.bufPrint(&buf, "{f}-{s}", .{ version, flavor });
+    const version_path = try std.fmt.bufPrint(&buf, "{f}-{s}", .{ version, version.flavor });
     const version_dir = try root.createDirPathOpen(io, version_path, .{});
     defer version_dir.close(io);
 
-    const new_file = try version_dir.createFile(io, slug, .{ .truncate = true });
+    const new_file = try version_dir.createFile(io, sub_path, .{ .truncate = true });
     defer new_file.close(io);
     try new_file.writer(io, &buf).interface.writeAll(data);
 }
+

@@ -1,65 +1,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const download_urls = @import("download_urls");
+
 const Config = @import("Config.zig");
 const cache = @import("cache.zig");
+const fetch = @import("fetch.zig");
+const installer = @import("installer.zig");
 const progress = @import("progress.zig");
-const assert = std.debug.assert;
 
 const log = std.log.default;
-
-fn likelyMainBinary(name: []const u8) bool {
-    if (std.mem.endsWith(u8, name, &.{std.fs.path.sep})) return false;
-    const ext = std.fs.path.extension(name);
-    if (std.mem.eql(u8, ext, ".exe")) return true;
-    if (std.mem.eql(u8, ext, ".x86_64")) return true;
-    if (std.mem.eql(u8, ext, ".arm64")) return true;
-    if (std.mem.find(u8, name, "console") != null) return true;
-    return false;
-}
-
-/// spins until canceled
-fn spin(io: std.Io) void {
-    var spinner = progress.Spinner.init();
-    
-    std.debug.print("\x1b[?25l", .{}); // hide cursor
-    while (io.sleep(.fromMilliseconds(100), .awake)) |_| {
-        std.debug.print("\x1b[2K\r", .{});
-        std.debug.print("downloading... {s}", .{ spinner.frame() });
-        spinner.next();
-    } else |_| {}
-    std.debug.print("\x1b[2K\r", .{});
-    std.debug.print("\x1b[?25h", .{}); // show cursor
-}
-
-fn fetchRemote(io: std.Io, arena: std.mem.Allocator, uri: []const u8, writer: *std.Io.Writer, display_progress: bool) !void {
-    log.info("fetching remote: {s}", .{ uri });
-
-    var client = std.http.Client{ .io = io, .allocator = arena };
-    defer client.deinit();
-
-    var req = try client.request(.GET, try std.Uri.parse(uri), .{ .keep_alive = false });
-    defer req.deinit();
-    try req.sendBodiless();
-
-    var head_buf: [8192]u8 = undefined;
-    var res = try req.receiveHead(&head_buf);
-    if (res.head.status != .ok) {
-        log.err("http error: {t} {?s}", .{ res.head.status, res.head.status.phrase() });
-        return error.FetchError;
-    }
-
-    log.debug("remote file has len: {?d}", .{ res.head.content_length });
-
-    var spinner: ?std.Io.Future(void) = null;
-    if (display_progress) spinner = io.async(spin, .{ io });
-    defer if (spinner) |*f| f.cancel(io);
-
-    var body_buf: [8192]u8 = undefined;
-    var body_reader = res.reader(&body_buf);
-    _ = try body_reader.streamRemaining(writer);
-    try writer.flush();
-}
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -73,169 +22,29 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // resolve the config from defaults -> environment -> cli args
-    var config: Config = undefined;
-    config.initDefault();
-    config.initEnv(environ);
-    {
-        var it = try init.minimal.args.iterateAllocator(arena);
-        try config.initCliArgs(&it);
-    }
-    try config.resolve(arena, environ);
-    config.validate() catch |err| {
-        var stderr = std.Io.File.stderr().writer(io, &.{});
-        switch (err) {
-            error.MissingVersion => try stderr.interface.print("error: Missing required option 'version'", .{}),
-            error.InvalidPath => try stderr.interface.print("error: Invalid install path '{s}'", .{config.install_path}),
-            else => try stderr.interface.print("error: {t}", .{err}),
-        }
-        try stderr.interface.writeAll("\n\ntry gup --help");
-        std.process.exit(1);
+    const args = try init.minimal.args.toSlice(arena);
+    const config = Config.parse(arena, environ, args[1..]) catch |err| switch (err) {
+        // todo handle specific errors
+        else => { std.debug.print("error: {t}\n", .{ err }); return err; },
     };
 
-    if (config.verbose)
-        log.info("resolved: {f}", .{config});
-
-    if (config.dry_run) {
-        if (config.from_zip) |zip_path| {
-            log.info("would attempt to extract from local file: {s}", .{zip_path});
-        } else {
-            var buf: [256]u8 = undefined;
-            log.info("would attempt to fetch from remote: {s}", .{try config.makeUri(&buf)});
-        }
-        return;
-    }
-
-    try cache.init(io, environ, &config);
-    defer cache.deinit(io);
-
-    const display_pretty = try std.Io.File.stderr().isTty(io);
-
-    const cwd = std.Io.Dir.cwd();
-    var buf: [4096]u8 = undefined;
-    var zip_file = blk: {
-        if (config.from_zip) |local_zip_path| {
-            log.info("unpacking from local zip: {s}", .{ local_zip_path });
-            break :blk try cwd.openFile(io, local_zip_path, .{});
-        }
-
-        // todo hack
-        if (try cache.packageIsValid(io, config.version, config.flavor, config.slug().?, .{ .skip_hash = !std.mem.eql(u8, config.flavor, "stable") })) {
-            log.debug("cache hit {f}-{s}_{s}", .{ config.version, config.flavor, config.slug().? });
-            break :blk try cache.getPackageFile(io, config.version, config.flavor, config.slug().?);
-        }
-
-        const cached_zip_file = try cache.createPackageFile(io, config.version, config.flavor, config.slug().?);
-
-        var uri_buf: [1024]u8 = undefined;
-        var uri_str = try config.makeUri(&uri_buf);
-
-        var zip_file_writer = cached_zip_file.writer(io, &buf);
-        try fetchRemote(io, arena, uri_str, &zip_file_writer.interface, display_pretty);
-
-        // godot doesn't publish hashes for non tagged releases
-        if (std.mem.eql(u8, config.flavor, "stable")) {
-            // this is ass and a hack
-            if (cache.getPackageFile(io, config.version, config.flavor, cache.hash_file_name)) |f| {
-                f.close(io);
-            } else |err| switch (err) {
-                error.FileNotFound => {
-                    const hash_file = try cache.createPackageFile(io, config.version, config.flavor, cache.hash_file_name);
-                    defer hash_file.close(io);
-                    var hash_file_writer = hash_file.writer(io, &buf);
-                    uri_str = try std.fmt.bufPrint(&uri_buf, "{s}/{f}-{s}/SHA512-SUMS.txt", .{ download_urls.github, config.version, config.flavor });
-                    try fetchRemote(io, arena, uri_str, &hash_file_writer.interface, display_pretty);
-                },
-                else => {
-                    log.err("unable to create {f} hash file: {t}", .{ config.version, err });
-                },
-            }
-        }
-
-        break :blk cached_zip_file;
-    };
-    errdefer zip_file.close(io);
-    var zip_reader = zip_file.reader(io, &buf);
-    try zip_reader.seekTo(0);
-
-    const dest_dir = try std.Io.Dir.cwd().openDir(io, config.install_path, .{});
-    errdefer dest_dir.close(io);
-    log.info("extracting to {s}", .{config.install_path});
-    {
-        var filename_buf: [512]u8 = undefined;
-        var it = try std.zip.Iterator.init(&zip_reader);
-        while (try it.next()) |entry| {
-            entry.extract(&zip_reader, .{}, &filename_buf, dest_dir) catch |err| switch (err) {
-                error.PathAlreadyExists => {
-                    log.info("{s} already exists, skipping", .{filename_buf[0..entry.filename_len]});
-                    continue;
-                },
-                else => {
-                    log.err("while extracting: {t}", .{err});
-                    continue;
-                },
-            };
-            const filename = filename_buf[0..entry.filename_len];
-            if (config.verbose)
-                log.info("extracted {s}", .{filename});
-
-            const likely_main_bin = likelyMainBinary(filename);
-            if (config.verbose and likely_main_bin)
-                log.info("likely main bin {s}", .{filename});
-
-            if (config.setup_links and likely_main_bin) {
-                const console = if (std.mem.find(u8, filename, "console")) |_| "_console" else "";
-                const ext = if (builtin.os.tag == .windows) ".exe" else "";
-
-                var symlink_path_buf: [64]u8 = undefined;
-                const symlink_path = try std.fmt.bufPrint(&symlink_path_buf, "{s}{s}{s}", .{ config.link_name, console, ext });
-
-                const should_link = blk: {
-                    if (dest_dir.statFile(io, symlink_path, .{ .follow_symlinks = false })) |stat| {
-                        if (stat.kind != .sym_link) {
-                            log.warn("won't remove non-symlink {s} to link to {s}", .{ symlink_path, filename });
-                            break :blk false;
-                        }
-                        try dest_dir.deleteFile(io, symlink_path);
-                        break :blk true;
-                    } else |err| switch (err) {
-                        error.FileNotFound => break :blk true,
-                        else => {
-                            log.warn("won't link due to stat error: {t}", .{err});
-                            break :blk false;
-                        },
-                    }
-                };
-
-                if (should_link) {
-                    dest_dir.symLink(io, filename, symlink_path, .{}) catch |err| {
-                        log.err("unable to link {s} -> {s}: {t}", .{ symlink_path, filename, err });
-                    };
-                }
-            }
-
-            if (builtin.os.tag == .linux and likely_main_bin) {
-                const file = try dest_dir.openFile(io, filename, .{ .mode = .write_only });
-                try file.setPermissions(io, .fromMode(0o744));
-                file.close(io);
-            }
+    errdefer cache.deinit(io);
+    switch (config.command) {
+        .help => |usage| {
+            try std.Io.File.stderr().writeStreamingAll(io, usage);
+        },
+        .install => |install_options| {
+            try cache.init(io, environ, config.verbose);
+            try installer.installPackage(io, arena, install_options, config.verbose, config.dry_run);
+        },
+        .fetch => |fetch_options| {
+            try cache.init(io, environ, config.verbose);
+            try fetch.fetchPackage(io, arena, fetch_options, config.verbose, config.dry_run);
+        },
+        .cache => |cache_options| {
+            try cache.init(io, environ, config.verbose);
+            try cache.command(io, arena, cache_options, config.verbose, config.dry_run);
         }
     }
-
-    if (config.setup_links) {
-        log.info("symlinked binaries to {s}", .{config.link_name});
-    }
-
-    if (config.self_contained) {
-        if (dest_dir.createFile(io, "_sc_", .{})) |sc| {
-            sc.close(io);
-            log.info("installed in self-contained mode, remove '_sc_' from install dir to revert", .{});
-        } else |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => log.err("unable to create self contained marker: {t}", .{err}),
-        }
-    }
-
-    zip_file.close(io);
-    dest_dir.close(io);
+    cache.deinit(io);
 }
