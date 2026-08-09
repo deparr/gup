@@ -46,7 +46,7 @@ pub fn installPackage(io: Io, arena: Allocator, options: InstallOptions, verbose
             var uri_str = try fetch.uriFromSpec(&uri_buf, spec);
 
             var zip_file_writer = cached_zip_file.writer(io, &buf);
-            try fetch.fetchPackage2(io, arena, uri_str, &zip_file_writer.interface, pretty_print);
+            try fetch.fetchRemote(io, arena, uri_str, &zip_file_writer.interface, pretty_print);
 
             // godot doesn't publish hashes for non-tagged releases
             if (spec.isStable()) {
@@ -59,7 +59,7 @@ pub fn installPackage(io: Io, arena: Allocator, options: InstallOptions, verbose
                         defer hash_file.close(io);
                         var hash_file_writer = hash_file.writer(io, &buf);
                         uri_str = try fetch.hashFileUri(&uri_buf, spec.version);
-                        try fetch.fetchPackage2(io, arena, uri_str, &hash_file_writer.interface, pretty_print);
+                        try fetch.fetchRemote(io, arena, uri_str, &hash_file_writer.interface, pretty_print);
                     },
                     else => {
                         log.err("unable to create {f} hash file {t}", .{ spec.version, err });
