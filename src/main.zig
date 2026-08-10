@@ -28,7 +28,7 @@ pub fn main(init: std.process.Init) !void {
     errdefer cache.deinit(io);
     switch (config.command) {
         .help => |usage| {
-            try std.Io.File.stderr().writeStreamingAll(io, usage);
+            try std.Io.File.stdout().writeStreamingAll(io, usage);
         },
         .install => |install_options| {
             try cache.init(io, environ, config.verbose);
