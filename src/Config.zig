@@ -4,7 +4,7 @@ const download_urls = @import("download_urls");
 
 const log = std.log.scoped(.config);
 
-const Core = @This();
+const Config = @This();
 
 const ParseError = error{
     InvalidVersion,
@@ -19,13 +19,12 @@ command: Command,
 verbose: bool,
 dry_run: bool,
 
-pub fn parse(arena: std.mem.Allocator, environ: *std.process.Environ.Map, cli_args: []const []const u8) ParseError!Core {
-    // parse core args
-    var core: Core = .initDefault();
-    core.initEnv(environ);
-    const command_idx = core.initCli(cli_args);
+pub fn parse(arena: std.mem.Allocator, environ: *std.process.Environ.Map, cli_args: []const []const u8) ParseError!Config {
+    var config: Config = .initDefault();
+    config.initEnv(environ);
+    const command_idx = config.initCli(cli_args);
     if (command_idx >= cli_args.len) {
-        return core;
+        return config;
     }
 
     const command_str = cli_args[command_idx];
@@ -35,30 +34,30 @@ pub fn parse(arena: std.mem.Allocator, environ: *std.process.Environ.Map, cli_ar
         return error.UnknownCommand;
     }
     const command_args = cli_args[command_idx + 1 ..];
-    core.command = blk: switch (maybe_command.?) {
+    config.command = blk: switch (maybe_command.?) {
         .help => {
             if (command_args.len == 0) {
-                break :blk .{ .help = Core.usage };
+                break :blk .{ .help = Config.usage };
             }
             const command = command_args[0];
             if (strcmp(command, "install")) break :blk .{ .help = Command.Install.usage };
             if (strcmp(command, "fetch")) break :blk .{ .help = Command.Fetch.usage };
             if (strcmp(command, "cache")) break :blk .{ .help = Command.Cache.usage };
-            break :blk .{ .help = Core.usage };
+            break :blk .{ .help = Config.usage };
         },
-        .install => .{ .install = try Command.Install.parse(arena, environ, command_args, &core) },
+        .install => .{ .install = try Command.Install.parse(arena, environ, command_args, &config) },
         .fetch => .{ .fetch = try Command.Fetch.parse(arena, environ, command_args) },
-        .cache => .{ .cache = try Command.Cache.parse(arena, environ, command_args) },
+        .cache => .{ .cache = try Command.Cache.parse(arena, environ, command_args, &config) },
     };
 
-    return core;
+    return config;
 }
 
-fn initDefault() Core {
-    return .{ .command = .{ .help = Core.usage }, .verbose = builtin.mode == .Debug, .dry_run = false };
+fn initDefault() Config {
+    return .{ .command = .{ .help = Config.usage }, .verbose = builtin.mode == .Debug, .dry_run = false };
 }
 
-fn initEnv(self: *Core, env: *std.process.Environ.Map) void {
+fn initEnv(self: *Config, env: *std.process.Environ.Map) void {
     if (env.get("GUP_VERBOSE")) |verbose| {
         self.verbose = readBoolOption(verbose);
     }
@@ -67,7 +66,7 @@ fn initEnv(self: *Core, env: *std.process.Environ.Map) void {
     }
 }
 
-fn initCli(self: *Core, args: []const []const u8) usize {
+fn initCli(self: *Config, args: []const []const u8) usize {
     const command_index = for (0.., args) |i, arg| {
         const kind = argKind(arg);
         const key = switch (kind) {
@@ -84,7 +83,7 @@ fn initCli(self: *Core, args: []const []const u8) usize {
         } else if (strcmp(key, "dry-run") or strcmp(key, "n")) {
             self.dry_run = true;
         } else if (strcmp(key, "help") or strcmp(key, "h")) {
-            self.command = .{ .help = Core.usage };
+            self.command = .{ .help = Config.usage };
             break args.len;
         }
     } else args.len;
@@ -100,8 +99,8 @@ pub const usage = std.fmt.comptimePrint(
     \\
     \\commands:
     \\  help     Print this menu and command options
-    \\  install  Unpack a godot package to this machine, fetching it if needed
-    \\  fetch    Fetch a godot package and store in the package cache
+    \\  install  Unpack a godot package on this machine, fetching it if needed
+    \\  fetch    Fetch a godot package and store it in the package cache
     \\  cache    Manage the gup package cache
     \\
     \\Use 'gup help [command]' to see command options
@@ -136,7 +135,7 @@ pub const Command = union(Tag) {
             remote: void,
         };
 
-        fn parse(arena: std.mem.Allocator, env: *std.process.Environ.Map, cli_args: []const []const u8, core: *Core) !Install {
+        fn parse(arena: std.mem.Allocator, env: *std.process.Environ.Map, cli_args: []const []const u8, core: *Config) !Install {
             var install = Install.initDefault();
             install.initEnv(env);
             try install.initCli(cli_args, core);
@@ -187,7 +186,7 @@ pub const Command = union(Tag) {
             }
         }
 
-        fn initCli(self: *Install, args: []const []const u8, core: *Core) !void {
+        fn initCli(self: *Install, args: []const []const u8, core: *Config) !void {
             var found_version_arg = false;
             for (args) |arg| {
                 const kind = argKind(arg);
@@ -241,7 +240,7 @@ pub const Command = union(Tag) {
                 } else if (strcmp(key, "dry-run") or strcmp(key, "n")) {
                     core.dry_run = true;
                 } else {
-                    log.err("unknown arg: {s}", .{arg});
+                    unknownArgLog(arg, "install");
                     return error.UnknownArg;
                 }
             }
@@ -250,7 +249,7 @@ pub const Command = union(Tag) {
         pub const usage =
             \\Usage: gup install VERSION [OPTIONS]
             \\
-            \\VERSION is a semantic(ish) version optionally followed by a tag:
+            \\VERSION is a semantic version optionally followed by a tag:
             \\  4.7.1 OR 4.7.1-stable OR 4.8-dev3
             \\
             \\options:
@@ -268,15 +267,60 @@ pub const Command = union(Tag) {
     };
 
     pub const Cache = struct {
-        sub_command: enum {
-            list,
-            clean,
-        },
-        fn parse(arena: std.mem.Allocator, env: *std.process.Environ.Map, args: []const []const u8) !Cache {
+        sub_command: SubCommand,
+
+        fn parse(arena: std.mem.Allocator, env: *std.process.Environ.Map, args: []const []const u8, core: *Config) !Cache {
             _ = arena;
-            _ = env;
-            _ = args;
+            var cache = Cache.initDefault();
+            cache.initEnv(env);
+            try cache.initCli(args, core);
+            return cache;
+        }
+
+        fn initDefault() Cache {
             return .{ .sub_command = .list };
+        }
+
+        fn initEnv(self: *Cache, env: *std.process.Environ.Map) void {
+            _ = self;
+            _ = env;
+        }
+
+        fn initCli(self: *Cache, args: []const []const u8, core: *Config) !void {
+            var found_sub_command = false;
+            for (args) |arg| {
+                const kind = argKind(arg);
+                const maybe_pair = switch (kind) {
+                    .short => arg[1..],
+                    .long => arg[2..],
+                    .positional => {
+                        if (found_sub_command) {
+                            log.warn("ignoring extra positional arg: {s}", .{arg});
+                        } else {
+                            if (std.meta.stringToEnum(SubCommand, arg)) |sc| {
+                                self.sub_command = sc;
+                                found_sub_command = true;
+                            } else {
+                                unknownArgLog(arg, "cache");
+                                return error.UnknownArg;
+                            }
+                        }
+                        continue;
+                    },
+                };
+
+                var pair_it = std.mem.tokenizeScalar(u8, maybe_pair, '=');
+                const key, const value = .{ pair_it.next().?, pair_it.rest() };
+                _ = value;
+
+                if (strcmp(key, "dir") or strcmp(key, "d")) {
+                } else if (strcmp(key, "dry-run") or strcmp(key, "n")) {
+                    core.dry_run = true;
+                } else {
+                    unknownArgLog(arg, "cache");
+                    return error.UnknownArg;
+                }
+            }
         }
 
         pub const usage =
@@ -284,11 +328,14 @@ pub const Command = union(Tag) {
             \\
             \\options: 
             \\  --dir=[STR], -d  Use [STR] as the cache root directory
+            \\  --dry-run,   -n  Print actions that would be taken, but do not take them
             \\
             \\commands:
             \\  list*  Print cache tree and usage
             \\  clean  Remove cache tree
         ;
+
+        pub const SubCommand = enum { list, clean };
     };
 
     pub const Fetch = struct {
@@ -305,7 +352,7 @@ pub const Command = union(Tag) {
         pub const usage =
             \\Usage: gup fetch VERSION [OPTIONS]
             \\
-            \\VERSION is a semantic(ish) version optionally followed by a tag:
+            \\VERSION is a semantic version optionally followed by a tag:
             \\  gup install 4.7.1 OR gup install 4.8-dev3
             \\
             \\options:
@@ -552,3 +599,6 @@ fn requiredArgLog(arg: []const u8, command: []const u8) void {
     log.err("missing required arg {s}, try 'gup help {s}'", .{ arg, command });
 }
 
+fn unknownArgLog(arg: []const u8, command: []const u8) void {
+    log.err("unknown {s} arg: {s}", .{ command, arg });
+}

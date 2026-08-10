@@ -20,11 +20,10 @@ pub const hash_file_name = "sha512-sums.txt";
 var has_root: ?std.Io.Dir = null;
 
 pub fn command(io: Io, arena: Allocator, options: CacheCommand, verbose: bool, dry_run: bool) !void {
-    _ = io;
-    _ = arena;
-    _ = options;
-    _ = verbose;
-    _ = dry_run;
+    switch (options.sub_command) {
+        .list => try listCache(io, arena, verbose),
+        .clean => try cleanCache(io, arena, verbose, dry_run),
+    }
 }
 
 pub fn init(io: std.Io, environ: *std.process.Environ.Map, verbose: bool) !void {
@@ -46,7 +45,7 @@ pub fn init(io: std.Io, environ: *std.process.Environ.Map, verbose: bool) !void 
         break :blk try std.fmt.bufPrint(&buf, "{f}", .{joiner});
     };
 
-    has_root = std.Io.Dir.cwd().createDirPathOpen(io, root_path, .{ .open_options = .{ .follow_symlinks = true } }) catch |err| {
+    has_root = std.Io.Dir.cwd().createDirPathOpen(io, root_path, .{ .open_options = .{ .follow_symlinks = true, .iterate = true } }) catch |err| {
         log.err("opening cache ({s}): {t}", .{ root_path, err });
         return error.CacheInit;
     };
@@ -67,7 +66,6 @@ pub const CacheCheckOptions = struct {
 };
 
 pub fn packageIsValid(io: std.Io, spec: PackageSpec, options: CacheCheckOptions) !bool {
-    assert(has_root != null);
     const root = has_root orelse return error.NoCacheInit;
 
     var path_buf: [256]u8 = undefined;
@@ -120,7 +118,6 @@ pub fn packageIsValid(io: std.Io, spec: PackageSpec, options: CacheCheckOptions)
 }
 
 pub fn getPackageFile(io: std.Io, version: Version, sub_path: []const u8) !std.Io.File {
-    assert(has_root != null);
     const root = has_root orelse return error.NoCacheInit;
     var path_buf: [256]u8 = undefined;
     const package_path = try std.fmt.bufPrint(&path_buf, "{f}-{s}/{s}", .{ version, version.flavor, sub_path });
@@ -128,7 +125,6 @@ pub fn getPackageFile(io: std.Io, version: Version, sub_path: []const u8) !std.I
 }
 
 pub fn createPackageFile(io: std.Io, version: Version, sub_path: []const u8) !std.Io.File {
-    assert(has_root != null);
     const root = has_root orelse return error.NoCacheInit;
     var path_buf: [256]u8 = undefined;
     const version_path = try std.fmt.bufPrint(&path_buf, "{f}-{s}", .{ version, version.flavor });
@@ -138,7 +134,6 @@ pub fn createPackageFile(io: std.Io, version: Version, sub_path: []const u8) !st
 }
 
 pub fn putPackage(io: std.Io, version: Version, sub_path: []const u8, data: []const u8) !void {
-    assert(has_root != null);
     const root = has_root orelse return error.NoCacheInit;
     var buf: [16 * 1024]u8 = undefined;
     const version_path = try std.fmt.bufPrint(&buf, "{f}-{s}", .{ version, version.flavor });
@@ -150,3 +145,158 @@ pub fn putPackage(io: std.Io, version: Version, sub_path: []const u8, data: []co
     try new_file.writer(io, &buf).interface.writeAll(data);
 }
 
+const CacheFileInfo = struct {
+    path: []const u8,
+    size: u64,
+};
+
+const CacheDirInfo = struct {
+    path: []const u8,
+    files: std.ArrayList(CacheFileInfo),
+};
+
+const HumanSize = struct {
+    count: usize,
+    magnitude: enum {
+        bytes,
+        kilo,
+        mega,
+        giga,
+
+        fn fromBytes(b: usize) @This() {
+            return switch (b) {
+                0...1023 => .bytes,
+                1024...1048575 => .kilo,
+                1048576...1073741823 => .mega,
+                else => .giga,
+            };
+        }
+
+        fn char(self: @This()) u8 {
+            return switch (self) {
+                .bytes => 'B',
+                .kilo => 'K',
+                .mega => 'M',
+                .giga => 'G',
+            };
+        }
+    },
+
+    pub fn format(self: HumanSize, writer: *Io.Writer) Io.Writer.Error!void {
+        try writer.print("{d}{c}", .{ self.count, self.magnitude.char() });
+    }
+};
+
+fn readableSize(size: usize) HumanSize {
+    var power: usize = 1;
+    while (size / (power * 1024) > 0) power *= 1024;
+    return .{
+        .count = size / power,
+        .magnitude = .fromBytes(power),
+    };
+}
+
+fn listCache(io: Io, arena: Allocator, verbose: bool) !void {
+    const max_depth = 10;
+    _ = verbose;
+
+    const root = has_root orelse return error.NoCacheInit;
+    var root_path_buf: [256]u8 = undefined;
+    // todo docs advise against Dir.realPath()
+    const root_path_len = try root.realPath(io, &root_path_buf);
+
+    var iter = try root.walkSelectively(arena);
+    defer iter.deinit();
+
+    var root_info = try std.ArrayList(CacheDirInfo).initCapacity(arena, 10);
+    while (try iter.next(io)) |entry| {
+        if (entry.depth() > max_depth) {
+            log.warn("cache list max depth reached", .{});
+            break;
+        }
+
+        switch (entry.kind) {
+            .directory => {
+                try iter.enter(io, entry);
+                try root_info.append(arena, .{
+                    .path = try arena.dupe(u8, entry.path),
+                    .files = .empty,
+                });
+            },
+            .file => {
+                const dir = path.dirname(entry.path) orelse "";
+                var dir_info = for (root_info.items) |*dir_info| {
+                    if (std.mem.eql(u8, dir_info.path, dir)) break dir_info;
+                } else unreachable;
+                const stat = try entry.dir.statFile(io, entry.basename, .{});
+                try dir_info.files.append(arena, .{
+                    .path = try arena.dupe(u8, entry.basename),
+                    .size = stat.size,
+                });
+            },
+            else => {},
+        }
+    }
+
+    var out_buf: [2048]u8 = undefined;
+    var stdout = Io.File.stdout().writer(io, &out_buf);
+    var writer = &stdout.interface;
+
+    try writer.print("gup cache '{s}':\n", .{root_path_buf[0..root_path_len]});
+    var root_total_size: u64 = 0;
+    for (root_info.items) |dir_info| {
+        var dir_total_size: u64 = 0;
+        var biggest_file_name_len: usize = 0;
+        for (dir_info.files.items) |item| {
+            dir_total_size += item.size;
+            biggest_file_name_len = @max(item.path.len, biggest_file_name_len);
+        }
+
+        try writer.print("  {s}/", .{ dir_info.path });
+        _ = try writer.splatByte(' ', biggest_file_name_len -| dir_info.path.len + 1);
+        try writer.print("  {f}\n", .{ readableSize(dir_total_size) });
+
+        for (dir_info.files.items, 0..) |item, i| {
+            if (i < dir_info.files.items.len - 1)
+                try writer.print("  ├ {s}", .{item.path})
+            else
+                try writer.print("  └ {s}", .{item.path});
+            _ = try writer.splatByte(' ', biggest_file_name_len - item.path.len);
+            try writer.print("  {f}\n", .{readableSize(item.size)});
+        }
+
+        try writer.writeByte('\n');
+        root_total_size += dir_total_size;
+    }
+    try writer.print("total_size: {f}\n", .{readableSize(root_total_size)});
+    try writer.flush();
+}
+
+// todo accept specific versions to delete
+fn cleanCache(io: Io, arena: Allocator, verbose: bool, dry_run: bool) !void {
+    _ = arena;
+
+    const root = has_root orelse return error.NoCacheInit;
+
+    var root_path_buf: [256]u8 = undefined;
+    // todo docs advise against Dir.realPath()
+    const root_path_len = try root.realPath(io, &root_path_buf);
+    const root_path = root_path_buf[0..root_path_len];
+
+    if (dry_run) {
+        log.info("would attempt to recursively delete directory: {s}", .{ root_path });
+        return;
+    }
+
+    var iter = root.iterate();
+    while (try iter.next(io)) |entry| {
+        switch (entry.kind) {
+            .directory => {
+                if (verbose)
+                    log.info("deleting {s}/{s}/* ...", .{ root_path, entry.name });
+                try root.deleteTree(io, entry.name);
+            },
+            else => log.warn("skipping non directory from cache clean: {s}", .{ entry.name }),
+        }
+    }
+}

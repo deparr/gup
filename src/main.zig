@@ -23,10 +23,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const args = try init.minimal.args.toSlice(arena);
-    const config = Config.parse(arena, environ, args[1..]) catch |err| switch (err) {
-        // todo handle specific errors
-        else => { std.debug.print("error: {t}\n", .{ err }); return err; },
-    };
+    const config = try Config.parse(arena, environ, args[1..]);
 
     errdefer cache.deinit(io);
     switch (config.command) {
