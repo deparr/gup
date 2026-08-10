@@ -36,7 +36,7 @@ pub fn main(init: std.process.Init) !void {
         },
         .fetch => |fetch_options| {
             try cache.init(io, environ, config.verbose);
-            try fetch.fetchPackage(io, arena, fetch_options, config.verbose, config.dry_run);
+            try fetch.fetchPackageOptions(io, arena, fetch_options, config.verbose, config.dry_run);
         },
         .cache => |cache_options| {
             try cache.init(io, environ, config.verbose);

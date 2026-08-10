@@ -23,8 +23,6 @@ pub fn installPackage(io: Io, arena: Allocator, options: InstallOptions, verbose
         return;
     }
 
-    const pretty_print = std.Io.File.stdout().isTty(io) catch false;
-
     const spec = options.spec;
 
     const cwd = std.Io.Dir.cwd();
@@ -40,34 +38,14 @@ pub fn installPackage(io: Io, arena: Allocator, options: InstallOptions, verbose
                 break :blk try cache.getPackageFile(io, spec.version, spec.slug);
             }
 
-            const cached_zip_file = try cache.createPackageFile(io, spec.version, spec.slug);
-
-            var uri_buf: [1024]u8 = undefined;
-            var uri_str = try fetch.uriFromSpec(&uri_buf, spec);
-
-            var zip_file_writer = cached_zip_file.writer(io, &buf);
-            try fetch.fetchRemote(io, arena, uri_str, &zip_file_writer.interface, pretty_print);
-
-            // godot doesn't publish hashes for non-tagged releases
-            if (spec.isStable()) {
-                // this is ass and a hack
-                if (cache.getPackageFile(io, spec.version, cache.hash_file_name)) |f| {
-                    f.close(io);
-                } else |err| switch (err) {
-                    error.FileNotFound => {
-                        const hash_file = try cache.createPackageFile(io, spec.version, cache.hash_file_name);
-                        defer hash_file.close(io);
-                        var hash_file_writer = hash_file.writer(io, &buf);
-                        uri_str = try fetch.hashFileUri(&uri_buf, spec.version);
-                        try fetch.fetchRemote(io, arena, uri_str, &hash_file_writer.interface, pretty_print);
-                    },
-                    else => {
-                        log.err("unable to create {f} hash file {t}", .{ spec.version, err });
-                    },
-                }
+            if (!options.allow_fetch) {
+                log.err("cache does have v{f}-{s} and fetching was not allowed, exiting", .{ spec.version, spec.version.flavor });
+                return error.FetchDisabled;
             }
 
-            break :blk cached_zip_file;
+            try fetch.fetchPackage(io, arena, spec, null);
+
+            break :blk try cache.getPackageFile(io, spec.version, spec.slug);
         },
     };
 

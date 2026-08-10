@@ -46,7 +46,7 @@ pub fn parse(arena: std.mem.Allocator, environ: *std.process.Environ.Map, cli_ar
             break :blk .{ .help = Config.usage };
         },
         .install => .{ .install = try Command.Install.parse(arena, environ, command_args, &config) },
-        .fetch => .{ .fetch = try Command.Fetch.parse(arena, environ, command_args) },
+        .fetch => .{ .fetch = try Command.Fetch.parse(arena, environ, command_args, &config) },
         .cache => .{ .cache = try Command.Cache.parse(arena, environ, command_args, &config) },
     };
 
@@ -341,12 +341,98 @@ pub const Command = union(Tag) {
     pub const Fetch = struct {
         spec: PackageSpec,
         source_host: SourceHost,
+        force: bool,
 
-        fn parse(arena: std.mem.Allocator, env: *std.process.Environ.Map, args: []const []const u8) !Fetch {
+        fn parse(arena: std.mem.Allocator, env: *std.process.Environ.Map, args: []const []const u8, core: *Config) !Fetch {
             _ = arena;
-            _ = env;
-            _ = args;
-            return .{ .spec = .default, .source_host = .github };
+
+            var fetch = Fetch.initDefault();
+            fetch.initEnv(env);
+            try fetch.initCli(args, core);
+
+            if (fetch.spec.version.equal(.empty)) {
+                requiredArgLog("VERSION", "fetch");
+                return error.MissingRequiredArg;
+            }
+
+            try fetch.spec.setSlug();
+            if (!fetch.spec.isStable() and fetch.source_host != .godotorg) {
+                fetch.source_host = .godotorg;
+            }
+
+            return fetch;
+        }
+
+        fn initDefault() Fetch {
+            return .{
+                .spec = .default,
+                .source_host = .github,
+                .force = false,
+            };
+        }
+
+        fn initEnv(self: *Fetch, env: *std.process.Environ.Map) void {
+            self.spec.initEnv(env);
+            if (env.get("GUP_SOURCE_HOST")) |sh_str| {
+                if (enumFromEnv(SourceHost, "GUP_SOURCE_HOST", sh_str)) |sh| {
+                    self.source_host = sh;
+                }
+            }
+
+            if (env.get("GUP_FORCE_FETCH")) |force| {
+                self.force = readBoolOption(force);
+            }
+        }
+
+        fn initCli(self: *Fetch, args: []const []const u8, core: *Config) !void {
+            var found_version_arg = false;
+            for (args) |arg| {
+                const kind = argKind(arg);
+                const maybe_pair = switch (kind) {
+                    .short => arg[1..],
+                    .long => arg[2..],
+                    .positional => {
+                        if (found_version_arg) {
+                            log.warn("ignoring extra positional arg: {s}", .{arg});
+                        } else {
+                            found_version_arg = true;
+                            self.spec.version = try .parse(arg);
+                        }
+                        continue;
+                    },
+                };
+
+                var pair_it = std.mem.tokenizeScalar(u8, maybe_pair, '=');
+                const key, const value = .{ pair_it.next().?, pair_it.rest() };
+
+                if (strcmp(key, "platform") or strcmp(key, "p")) {
+                    if (std.meta.stringToEnum(Platform, value)) |platform| {
+                        self.spec.platform = platform;
+                    } else {
+                        log.warn("ignoring invalid platform: {s}", .{value});
+                    }
+                } else if (strcmp(key, "arch") or strcmp(key, "a")) {
+                    if (std.meta.stringToEnum(Arch, value)) |arch| {
+                        self.spec.arch = arch;
+                    } else {
+                        log.warn("ignoring invalid arch: {s}", .{value});
+                    }
+                } else if (strcmp(key, "script") or strcmp(key, "s")) {
+                    if (std.meta.stringToEnum(Script, value)) |script| {
+                        self.spec.script = script;
+                    } else {
+                        log.err("ignoring invalid script: {s}", .{value});
+                    }
+                } else if (strcmp(key, "force") or strcmp(key, "f")) {
+                    self.force = true;
+                }
+                else if (strcmp(key, "dry-run") or strcmp(key, "n")) {
+                    core.dry_run = true;
+                } else {
+                    unknownArgLog(arg, "fetch");
+                    return error.UnknownArg;
+                }
+            }
         }
 
         pub const usage =
@@ -361,6 +447,7 @@ pub const Command = union(Tag) {
             \\  --script=[V],   -s  Specify script support [gdscript*, dotnet]
             \\  --source=[V]    -u  Which source to download packages from [github*, godotorg]
             \\  --cache=[STR],  -d  Use [STR] as the gup cache dir
+            \\  --force,        -f  Always fetch and overwrite any cached packages
             \\  --dry-run,      -n  Print actions that would be taken, but do not take them
         ;
     };
