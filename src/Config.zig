@@ -124,11 +124,12 @@ pub const Command = union(Tag) {
     pub const Install = struct {
         spec: PackageSpec,
         install_source: Location,
-        install_path: []const u8,
+        dir: []const u8,
         link_name: []const u8,
         self_contained: bool,
         setup_links: bool,
-        allow_fetch: bool,
+        disallow_fetch: bool,
+        force_fetch: bool,
 
         pub const Location = union(enum) {
             local: []const u8,
@@ -146,7 +147,7 @@ pub const Command = union(Tag) {
             }
 
             try install.spec.setSlug();
-            install.install_path = try expandHome(install.install_path, arena, env);
+            install.dir = try expandHome(install.dir, arena, env);
             switch (install.install_source) {
                 .local => |path| install.install_source = .{ .local = try expandHome(path, arena, env) },
                 else => {},
@@ -159,18 +160,19 @@ pub const Command = union(Tag) {
             return .{
                 .spec = .default,
                 .install_source = .{ .remote = {} },
-                .install_path = if (builtin.os.tag == .windows) "~/Appdata/local/gup" else "~/.local/bin",
+                .dir = if (builtin.os.tag == .windows) "~/Appdata/local/gup" else "~/.local/bin",
                 .link_name = "godot",
                 .setup_links = true,
                 .self_contained = false,
-                .allow_fetch = true,
+                .disallow_fetch = false,
+                .force_fetch = false,
             };
         }
 
         fn initEnv(self: *Install, env: *std.process.Environ.Map) void {
             self.spec.initEnv(env);
-            if (env.get("GUP_INSTALL_PATH")) |install_path| {
-                self.install_path = install_path;
+            if (env.get("GUP_INSTALL_DIR")) |install_dir| {
+                self.dir = install_dir;
             }
             if (env.get("GUP_LINK_NAME")) |link_name| {
                 self.link_name = link_name;
@@ -181,8 +183,11 @@ pub const Command = union(Tag) {
             if (env.get("GUP_SELF_CONTAINED")) |self_contained| {
                 self.self_contained = readBoolOption(self_contained);
             }
-            if (env.get("GUP_ALLOW_FETCH")) |allow_fetch| {
-                self.allow_fetch = readBoolOption(allow_fetch);
+            if (env.get("GUP_DISALLOW_FETCH")) |disallow_fetch| {
+                self.disallow_fetch = readBoolOption(disallow_fetch);
+            }
+            if (env.get("GUP_FORCE_FETCH")) |force_fetch| {
+                self.force_fetch = readBoolOption(force_fetch);
             }
         }
 
@@ -227,16 +232,18 @@ pub const Command = union(Tag) {
                     }
                 } else if (strcmp(key, "link-name") or strcmp(key, "o")) {
                     self.link_name = value;
-                } else if (strcmp(key, "install-path") or strcmp(key, "i")) {
-                    self.install_path = value;
+                } else if (strcmp(key, "dir") or strcmp(key, "d")) {
+                    self.dir = value;
                 } else if (strcmp(key, "from-zip") or strcmp(key, "z")) {
                     self.install_source = .{ .local = value };
                 } else if (strcmp(key, "setup-links") or strcmp(key, "l")) {
                     self.setup_links = readBoolOption(value);
                 } else if (strcmp(key, "self-contained") or strcmp(key, "S")) {
                     self.self_contained = true;
-                } else if (strcmp(key, "allow-fetch") or strcmp(key, "f")) {
-                    self.allow_fetch = readBoolOption(value);
+                } else if (strcmp(key, "disallow-fetch") or strcmp(key, "D")) {
+                    self.disallow_fetch = true;
+                } else if (strcmp(key, "force-fetch") or strcmp(key, "f")) {
+                    self.force_fetch = true;
                 } else if (strcmp(key, "dry-run") or strcmp(key, "n")) {
                     core.dry_run = true;
                 } else {
@@ -256,12 +263,13 @@ pub const Command = union(Tag) {
             \\  --platform=[V],       -p  Specify a platform [windows, linux, macos, web, android, horizon, pico] (host)
             \\  --arch=[V],           -a  Specify an architecture [x64, x32, arm64, arm32, universal] (host)
             \\  --script=[V],         -s  Specify script support [gdscript*, dotnet]
-            \\  --install-path=[STR], -i  Specify install location (win: ~/AppData/Local/gup, else: ~/.local/bin)
+            \\  --dir=[STR],          -d  Specify install location (win: ~/AppData/Local/gup, else: ~/.local/bin)
             \\  --setup-links=[BOOL], -l  Create symlinks to installed binaries
             \\  --link-name=[STR],    -o  Base name for symlinks when using --setup-links
             \\  --from-zip=[STR],     -z  Unpack a zip at [STR] instead of using gup's cache
             \\  --self-contained,     -S  Install godot in self-contained mode
-            \\  --allow-fetch,        -f  Allow fetching from remote if specified package missing from the cache (true)
+            \\  --allow-fetch,        -D  Allow fetching from remote if specified package missing from the cache (true)
+            \\  --force-fetch,        -f  Always attempt to fetch from remote, regardless of cache state
             \\  --dry-run,            -n  Print actions that would be taken, but do not take them
         ;
     };

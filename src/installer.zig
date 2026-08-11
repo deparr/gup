@@ -20,6 +20,7 @@ pub fn installPackage(io: Io, arena: Allocator, options: InstallOptions, verbose
                 log.info("would attempt to fetch from remote: {s}", .{try fetch.uriFromSpec(&buf, options.spec)});
             },
         }
+        log.info("would attempt to extract to: {s}", .{ options.dir });
         return;
     }
 
@@ -33,14 +34,14 @@ pub fn installPackage(io: Io, arena: Allocator, options: InstallOptions, verbose
             break :blk try cwd.openFile(io, path, .{});
         },
         .remote => {
-            if (try cache.packageIsValid(io, spec, .{ .skip_hash = !spec.isStable() })) {
+            if (!options.force_fetch and try cache.packageIsValid(io, spec, .{ .skip_hash = !spec.isStable() })) {
                 log.debug("cache hit on {s}", .{spec.slug});
                 break :blk try cache.getPackageFile(io, spec.version, spec.slug);
             }
 
-            if (!options.allow_fetch) {
-                log.err("cache does have v{f}-{s} and fetching was not allowed, exiting", .{ spec.version, spec.version.flavor });
-                return error.FetchDisabled;
+            if (options.disallow_fetch) {
+                log.err("need to fetch v{f}-{s}, but fetching was disallowed", .{ spec.version, spec.version.flavor });
+                return error.FetchDisallowed;
             }
 
             try fetch.fetchPackage(io, arena, spec, null);
@@ -53,9 +54,9 @@ pub fn installPackage(io: Io, arena: Allocator, options: InstallOptions, verbose
     var zip_reader = zip_file.reader(io, &buf);
     try zip_reader.seekTo(0);
 
-    const dest_dir = try std.Io.Dir.cwd().openDir(io, options.install_path, .{});
+    const dest_dir = try std.Io.Dir.cwd().openDir(io, options.dir, .{});
     errdefer dest_dir.close(io);
-    log.info("extracting to {s}", .{options.install_path});
+    log.info("extracting to {s}", .{options.dir});
     {
         var filename_buf: [512]u8 = undefined;
         var it = try std.zip.Iterator.init(&zip_reader);
