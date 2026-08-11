@@ -62,7 +62,8 @@ pub fn installPackage(io: Io, arena: Allocator, options: InstallOptions, verbose
         while (try it.next()) |entry| {
             entry.extract(&zip_reader, .{}, &filename_buf, dest_dir) catch |err| switch (err) {
                 error.PathAlreadyExists => {
-                    log.info("{s} already exists, skipping", .{filename_buf[0..entry.filename_len]});
+                    if (verbose)
+                        log.info("{s} already exists, skipping", .{filename_buf[0..entry.filename_len]});
                     continue;
                 },
                 else => {
