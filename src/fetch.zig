@@ -21,7 +21,7 @@ pub fn fetchPackageOptions(io: Io, arena: Allocator, options: FetchOptions, verb
         return;
     }
 
-    if (!options.force and try cache.packageIsValid(io, options.spec, .{ .skip_hash = options.spec.isStable() })) {
+    if (!options.force and try cache.packageIsValid(io, options.spec, .{ .skip_hash = !options.spec.isStable() })) {
         if (verbose)
             log.debug("cache hit on {s}", .{options.spec.slug});
         return;

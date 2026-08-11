@@ -33,7 +33,7 @@ pub fn installPackage(io: Io, arena: Allocator, options: InstallOptions, verbose
             break :blk try cwd.openFile(io, path, .{});
         },
         .remote => {
-            if (try cache.packageIsValid(io, spec, .{ .skip_hash = spec.isStable() })) {
+            if (try cache.packageIsValid(io, spec, .{ .skip_hash = !spec.isStable() })) {
                 log.debug("cache hit on {s}", .{spec.slug});
                 break :blk try cache.getPackageFile(io, spec.version, spec.slug);
             }
