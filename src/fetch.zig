@@ -13,7 +13,7 @@ const FetchOptions = Config.Command.Fetch;
 
 const log = std.log.scoped(.fetch);
 
-pub fn fetchPackageOptions(io: Io, arena: Allocator, options: FetchOptions, verbose: bool, dry_run: bool) !void {
+pub fn fetchPackageOptions(io: Io, gpa: Allocator, options: FetchOptions, verbose: bool, dry_run: bool) !void {
     if (dry_run) {
         var uri_buf: [1024]u8 = undefined;
         const uri_str = try makeUri(&uri_buf, options.spec, options.source_host);
@@ -27,10 +27,10 @@ pub fn fetchPackageOptions(io: Io, arena: Allocator, options: FetchOptions, verb
         return;
     }
 
-    try fetchPackage(io, arena, options.spec, options.source_host);
+    try fetchPackage(io, gpa, options.spec, options.source_host);
 }
 
-pub fn fetchPackage(io: Io, arena: Allocator, spec: PackageSpec, source: ?SourceHost) !void {
+pub fn fetchPackage(io: Io, gpa: Allocator, spec: PackageSpec, source: ?SourceHost) !void {
     var uri_buf: [1024]u8 = undefined;
     var uri = if (source) |sh|
         try makeUri(&uri_buf, spec, sh)
@@ -43,7 +43,7 @@ pub fn fetchPackage(io: Io, arena: Allocator, spec: PackageSpec, source: ?Source
     var io_buf: [2048]u8 = undefined;
     var cache_file_writer = cache_file.writer(io, &io_buf);
 
-    try fetchRemote(io, arena, uri, &cache_file_writer.interface, pretty_print);
+    try fetchRemote(io, gpa, uri, &cache_file_writer.interface, pretty_print);
 
     if (!spec.isStable()) {
         return;
@@ -58,7 +58,7 @@ pub fn fetchPackage(io: Io, arena: Allocator, spec: PackageSpec, source: ?Source
             defer hash_file.close(io);
             var hash_file_writer = hash_file.writer(io, &io_buf);
             uri = try hashFileUri(&uri_buf, spec.version);
-            try fetchRemote(io, arena, uri, &hash_file_writer.interface, pretty_print);
+            try fetchRemote(io, gpa, uri, &hash_file_writer.interface, pretty_print);
         },
         else => {
             log.err("unable to create {f} hash file {t}", .{ spec.version, err });
@@ -66,10 +66,10 @@ pub fn fetchPackage(io: Io, arena: Allocator, spec: PackageSpec, source: ?Source
     }
 }
 
-pub fn fetchRemote(io: Io, arena: Allocator, uri: []const u8, writer: *std.Io.Writer, display_progress: bool) !void {
+pub fn fetchRemote(io: Io, gpa: Allocator, uri: []const u8, writer: *std.Io.Writer, display_progress: bool) !void {
     log.info("fetching remote: {s}", .{uri});
 
-    var client = std.http.Client{ .io = io, .allocator = arena };
+    var client = std.http.Client{ .io = io, .allocator = gpa };
     defer client.deinit();
 
     var req = try client.request(.GET, try std.Uri.parse(uri), .{ .keep_alive = false });

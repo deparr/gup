@@ -13,6 +13,7 @@ const log = std.log.default;
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
+    const gpa = init.gpa;
     const environ = init.environ_map;
     if (builtin.os.tag == .windows) {
         var handle = std.os.windows.CONSOLE.USER_IO.SET_CP(.Output, 65001);
@@ -32,15 +33,15 @@ pub fn main(init: std.process.Init) !void {
         },
         .install => |install_options| {
             try cache.init(io, environ, config.verbose);
-            try installer.installPackage(io, arena, install_options, config.verbose, config.dry_run);
+            try installer.installPackage(io, gpa, install_options, config.verbose, config.dry_run);
         },
         .fetch => |fetch_options| {
             try cache.init(io, environ, config.verbose);
-            try fetch.fetchPackageOptions(io, arena, fetch_options, config.verbose, config.dry_run);
+            try fetch.fetchPackageOptions(io, gpa, fetch_options, config.verbose, config.dry_run);
         },
         .cache => |cache_options| {
             try cache.init(io, environ, config.verbose);
-            try cache.command(io, arena, cache_options, config.verbose, config.dry_run);
+            try cache.command(io, gpa, cache_options, config.verbose, config.dry_run);
         }
     }
     cache.deinit(io);

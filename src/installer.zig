@@ -11,7 +11,7 @@ const log = std.log.scoped(.install);
 const InstallOptions = Config.Command.Install;
 
 
-pub fn installPackage(io: Io, arena: Allocator, options: InstallOptions, verbose: bool, dry_run: bool) !void {
+pub fn installPackage(io: Io, gpa: Allocator, options: InstallOptions, verbose: bool, dry_run: bool) !void {
     if (dry_run) {
         switch (options.install_source) {
             .local => |path| log.info("would attempt to extract from local file: {s}", .{path}),
@@ -44,7 +44,7 @@ pub fn installPackage(io: Io, arena: Allocator, options: InstallOptions, verbose
                 return error.FetchDisallowed;
             }
 
-            try fetch.fetchPackage(io, arena, spec, null);
+            try fetch.fetchPackage(io, gpa, spec, null);
 
             break :blk try cache.getPackageFile(io, spec.version, spec.slug);
         },

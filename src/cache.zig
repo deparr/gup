@@ -19,10 +19,10 @@ pub const hash_file_name = "sha512-sums.txt";
 
 var has_root: ?std.Io.Dir = null;
 
-pub fn command(io: Io, arena: Allocator, options: CacheCommand, verbose: bool, dry_run: bool) !void {
+pub fn command(io: Io, gpa: Allocator, options: CacheCommand, verbose: bool, dry_run: bool) !void {
     switch (options.sub_command) {
-        .list => try listCache(io, arena, verbose),
-        .clean => try cleanCache(io, arena, verbose, dry_run),
+        .list => try listCache(io, gpa, verbose),
+        .clean => try cleanCache(io, gpa, verbose, dry_run),
     }
 }
 
@@ -153,6 +153,12 @@ const CacheFileInfo = struct {
 const CacheDirInfo = struct {
     path: []const u8,
     files: std.ArrayList(CacheFileInfo),
+
+    fn deinit(self: *CacheDirInfo, gpa: Allocator) void {
+        gpa.free(self.path);
+        for (self.files.items) |f| gpa.free(f.path);
+        self.files.deinit(gpa);
+    }
 };
 
 const HumanSize = struct {
@@ -196,7 +202,7 @@ fn readableSize(size: usize) HumanSize {
     };
 }
 
-fn listCache(io: Io, arena: Allocator, verbose: bool) !void {
+fn listCache(io: Io, gpa: Allocator, verbose: bool) !void {
     const max_depth = 10;
     _ = verbose;
 
@@ -205,10 +211,12 @@ fn listCache(io: Io, arena: Allocator, verbose: bool) !void {
     // todo docs advise against Dir.realPath()
     const root_path_len = try root.realPath(io, &root_path_buf);
 
-    var iter = try root.walkSelectively(arena);
+    var iter = try root.walkSelectively(gpa);
     defer iter.deinit();
 
-    var root_info = try std.ArrayList(CacheDirInfo).initCapacity(arena, 10);
+    var root_info = try std.ArrayList(CacheDirInfo).initCapacity(gpa, 10);
+    defer { for (root_info.items) |*d| d.deinit(gpa); root_info.deinit(gpa); }
+
     while (try iter.next(io)) |entry| {
         if (entry.depth() > max_depth) {
             log.warn("cache list max depth reached", .{});
@@ -218,8 +226,8 @@ fn listCache(io: Io, arena: Allocator, verbose: bool) !void {
         switch (entry.kind) {
             .directory => {
                 try iter.enter(io, entry);
-                try root_info.append(arena, .{
-                    .path = try arena.dupe(u8, entry.path),
+                try root_info.append(gpa, .{
+                    .path = try gpa.dupe(u8, entry.path),
                     .files = .empty,
                 });
             },
@@ -229,8 +237,8 @@ fn listCache(io: Io, arena: Allocator, verbose: bool) !void {
                     if (std.mem.eql(u8, dir_info.path, dir)) break dir_info;
                 } else unreachable;
                 const stat = try entry.dir.statFile(io, entry.basename, .{});
-                try dir_info.files.append(arena, .{
-                    .path = try arena.dupe(u8, entry.basename),
+                try dir_info.files.append(gpa, .{
+                    .path = try gpa.dupe(u8, entry.basename),
                     .size = stat.size,
                 });
             },
@@ -273,8 +281,8 @@ fn listCache(io: Io, arena: Allocator, verbose: bool) !void {
 }
 
 // todo accept specific versions to delete
-fn cleanCache(io: Io, arena: Allocator, verbose: bool, dry_run: bool) !void {
-    _ = arena;
+fn cleanCache(io: Io, gpa: Allocator, verbose: bool, dry_run: bool) !void {
+    _ = gpa;
 
     const root = has_root orelse return error.NoCacheInit;
 
