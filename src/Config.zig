@@ -106,6 +106,7 @@ pub const usage = std.fmt.comptimePrint(
     \\Use 'gup help [command]' to see command options
     \\
     \\build:{t}
+    \\
 , .{builtin.mode});
 
 pub const Command = union(Tag) {
@@ -271,6 +272,7 @@ pub const Command = union(Tag) {
             \\  --allow-fetch,        -D  Allow fetching from remote if specified package missing from the cache (true)
             \\  --force-fetch,        -f  Always attempt to fetch from remote, regardless of cache state
             \\  --dry-run,            -n  Print actions that would be taken, but do not take them
+            \\
         ;
     };
 
@@ -341,6 +343,7 @@ pub const Command = union(Tag) {
             \\commands:
             \\  list*  Print cache tree and usage
             \\  clean  Remove cache tree
+            \\
         ;
 
         pub const SubCommand = enum { list, clean };
@@ -457,6 +460,7 @@ pub const Command = union(Tag) {
             \\  --cache=[STR],  -d  Use [STR] as the gup cache dir
             \\  --force,        -f  Always fetch and overwrite any cached packages
             \\  --dry-run,      -n  Print actions that would be taken, but do not take them
+            \\
         ;
     };
 };
