@@ -105,9 +105,9 @@ pub const usage = std.fmt.comptimePrint(
     \\
     \\Use 'gup help [command]' to see command options
     \\
-    \\build:{t}
+    \\build:{t}-{s}
     \\
-, .{builtin.mode});
+, .{ builtin.mode, @import("build_info").git });
 
 pub const Command = union(Tag) {
     install: Install,
@@ -336,14 +336,17 @@ pub const Command = union(Tag) {
         }
 
         pub const usage =
-            \\Usage: gup cache [OPTIONS] [COMMAND]
+            \\Usage: gup cache [OPTIONS] [COMMAND] [VERSIONS]
+            \\
+            \\VERSIONS are semantic versions optionally followed by a tag:
+            \\  4.7.1 OR 4.7.1-stable OR 4.8-dev3
             \\
             \\options: 
             \\  --dir=[STR], -d  Use [STR] as the cache root directory
             \\  --dry-run,   -n  Print actions that would be taken, but do not take them
             \\
             \\commands:
-            \\  list*  Print cache tree and usage
+            \\  list*  Print cache tree and disk usage
             \\  clean  Remove cache tree
             \\
         ;
