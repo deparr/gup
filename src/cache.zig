@@ -21,8 +21,8 @@ var has_root: ?std.Io.Dir = null;
 
 pub fn command(io: Io, gpa: Allocator, options: CacheCommand, verbose: bool, dry_run: bool) !void {
     switch (options.sub_command) {
-        .list => try listCache(io, gpa, verbose),
-        .clean => try cleanCache(io, gpa, verbose, dry_run),
+        .list => try listCache(io, gpa, options.versions, verbose),
+        .clean => try cleanCache(io, gpa, options.versions, verbose, dry_run),
     }
 }
 
@@ -202,7 +202,7 @@ fn readableSize(size: usize) HumanSize {
     };
 }
 
-fn listCache(io: Io, gpa: Allocator, verbose: bool) !void {
+fn listCache(io: Io, gpa: Allocator, versions: ?[]Version, verbose: bool) !void {
     const max_depth = 10;
     _ = verbose;
 
@@ -215,8 +215,12 @@ fn listCache(io: Io, gpa: Allocator, verbose: bool) !void {
     defer iter.deinit();
 
     var root_info = try std.ArrayList(CacheDirInfo).initCapacity(gpa, 10);
-    defer { for (root_info.items) |*d| d.deinit(gpa); root_info.deinit(gpa); }
+    defer {
+        for (root_info.items) |*d| d.deinit(gpa);
+        root_info.deinit(gpa);
+    }
 
+    var version_str_buf: [64]u8 = undefined;
     while (try iter.next(io)) |entry| {
         if (entry.depth() > max_depth) {
             log.warn("cache list max depth reached", .{});
@@ -225,14 +229,28 @@ fn listCache(io: Io, gpa: Allocator, verbose: bool) !void {
 
         switch (entry.kind) {
             .directory => {
-                try iter.enter(io, entry);
-                try root_info.append(gpa, .{
-                    .path = try gpa.dupe(u8, entry.path),
-                    .files = .empty,
-                });
+                // todo man I hate this
+                if (versions) |vs| {
+                    for (vs) |v| {
+                        const version_str = try std.fmt.bufPrint(&version_str_buf, "{f}", .{std.fmt.alt(v, .formatFlavor)});
+                        if (std.mem.eql(u8, version_str, entry.path)) {
+                            try iter.enter(io, entry);
+                            try root_info.append(gpa, .{
+                                .path = try gpa.dupe(u8, entry.path),
+                                .files = .empty,
+                            });
+                        }
+                    }
+                } else {
+                    try iter.enter(io, entry);
+                    try root_info.append(gpa, .{
+                        .path = try gpa.dupe(u8, entry.path),
+                        .files = .empty,
+                    });
+                }
             },
             .file => {
-                const dir = path.dirname(entry.path) orelse "";
+                const dir = path.dirname(entry.path) orelse unreachable;
                 var dir_info = for (root_info.items) |*dir_info| {
                     if (std.mem.eql(u8, dir_info.path, dir)) break dir_info;
                 } else unreachable;
@@ -260,9 +278,9 @@ fn listCache(io: Io, gpa: Allocator, verbose: bool) !void {
             biggest_file_name_len = @max(item.path.len, biggest_file_name_len);
         }
 
-        try writer.print("  {s}/", .{ dir_info.path });
+        try writer.print("  {s}/", .{dir_info.path});
         _ = try writer.splatByte(' ', biggest_file_name_len -| dir_info.path.len + 1);
-        try writer.print("  {f}\n", .{ readableSize(dir_total_size) });
+        try writer.print("  {f}\n", .{readableSize(dir_total_size)});
 
         for (dir_info.files.items, 0..) |item, i| {
             if (i < dir_info.files.items.len - 1)
@@ -280,19 +298,33 @@ fn listCache(io: Io, gpa: Allocator, verbose: bool) !void {
     try writer.flush();
 }
 
-// todo accept specific versions to delete
-fn cleanCache(io: Io, gpa: Allocator, verbose: bool, dry_run: bool) !void {
+fn cleanCache(io: Io, gpa: Allocator, versions: ?[]Version, verbose: bool, dry_run: bool) !void {
     _ = gpa;
 
     const root = has_root orelse return error.NoCacheInit;
-
     var root_path_buf: [256]u8 = undefined;
     // todo docs advise against Dir.realPath()
     const root_path_len = try root.realPath(io, &root_path_buf);
     const root_path = root_path_buf[0..root_path_len];
 
+    if (versions) |vs| {
+        if (dry_run) {
+            for (vs) |v| log.info("would attempt to recursively delete directory: {s}/{f}", .{ root_path, std.fmt.alt(v, .formatFlavor) });
+        } else {
+            var version_str_buf: [64]u8 = undefined;
+            for (vs) |v| {
+                const version_str = try std.fmt.bufPrint(&version_str_buf, "{f}", .{std.fmt.alt(v, .formatFlavor)});
+                if (verbose)
+                    log.info("deleting {s}/{f}/* ...", .{ root_path, std.fmt.alt(v, .formatFlavor) });
+                // todo should this try?
+                try root.deleteTree(io, version_str);
+            }
+        }
+        return;
+    }
+
     if (dry_run) {
-        log.info("would attempt to recursively delete directory: {s}", .{ root_path });
+        log.info("would attempt to recursively delete directory: {s}", .{root_path});
         return;
     }
 
@@ -304,7 +336,7 @@ fn cleanCache(io: Io, gpa: Allocator, verbose: bool, dry_run: bool) !void {
                     log.info("deleting {s}/{s}/* ...", .{ root_path, entry.name });
                 try root.deleteTree(io, entry.name);
             },
-            else => log.warn("skipping non directory from cache clean: {s}", .{ entry.name }),
+            else => log.warn("skipping non directory from cache clean: {s}", .{entry.name}),
         }
     }
 }

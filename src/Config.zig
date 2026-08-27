@@ -278,17 +278,17 @@ pub const Command = union(Tag) {
 
     pub const Cache = struct {
         sub_command: SubCommand,
+        versions: ?[]Version,
 
         fn parse(arena: std.mem.Allocator, env: *std.process.Environ.Map, args: []const []const u8, core: *Config) !Cache {
-            _ = arena;
             var cache = Cache.initDefault();
             cache.initEnv(env);
-            try cache.initCli(args, core);
+            try cache.initCli(arena, args, core);
             return cache;
         }
 
         fn initDefault() Cache {
-            return .{ .sub_command = .list };
+            return .{ .sub_command = .list, .versions = null };
         }
 
         fn initEnv(self: *Cache, env: *std.process.Environ.Map) void {
@@ -296,25 +296,25 @@ pub const Command = union(Tag) {
             _ = env;
         }
 
-        fn initCli(self: *Cache, args: []const []const u8, core: *Config) !void {
-            var found_sub_command = false;
-            for (args) |arg| {
+        fn initCli(self: *Cache, arena: std.mem.Allocator, args: []const []const u8, core: *Config) !void {
+            var versions = std.ArrayList(Version).empty;
+            for (args, 0..) |arg, i| {
                 const kind = argKind(arg);
                 const maybe_pair = switch (kind) {
                     .short => arg[1..],
                     .long => arg[2..],
                     .positional => {
-                        if (found_sub_command) {
-                            log.warn("ignoring extra positional arg: {s}", .{arg});
-                        } else {
+                        if (i == 0) {
                             if (std.meta.stringToEnum(SubCommand, arg)) |sc| {
                                 self.sub_command = sc;
-                                found_sub_command = true;
-                            } else {
-                                unknownArgLog(arg, "cache");
-                                return error.UnknownArg;
+                                continue;
                             }
                         }
+                        const version = Version.parse(arg) catch {
+                            log.err("Unable to parse arg as version: '{s}'", .{arg});
+                            return error.InvalidVersion;
+                        };
+                        try versions.append(arena, version);
                         continue;
                     },
                 };
@@ -331,6 +331,8 @@ pub const Command = union(Tag) {
                     return error.UnknownArg;
                 }
             }
+            if (versions.items.len > 0)
+                self.versions = try versions.toOwnedSlice(arena);
         }
 
         pub const usage =
@@ -436,8 +438,7 @@ pub const Command = union(Tag) {
                     }
                 } else if (strcmp(key, "force") or strcmp(key, "f")) {
                     self.force = true;
-                }
-                else if (strcmp(key, "dry-run") or strcmp(key, "n")) {
+                } else if (strcmp(key, "dry-run") or strcmp(key, "n")) {
                     core.dry_run = true;
                 } else {
                     unknownArgLog(arg, "fetch");
@@ -627,6 +628,7 @@ pub const Version = struct {
             flavor = str[dash + 1 ..];
             nums = str[0..dash];
         }
+        if (flavor.len == 0) return error.InvalidVersion;
         var it = std.mem.splitScalar(u8, nums, '.');
         return Version{
             .major = try parseNum(it.first()) orelse return error.InvalidVersion,
@@ -641,6 +643,14 @@ pub const Version = struct {
         if (self.patch) |p| {
             try writer.print(".{d}", .{p});
         }
+    }
+
+    pub fn formatFlavor(self: Version, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try writer.print("{d}.{d}", .{ self.major, self.minor });
+        if (self.patch) |p| {
+            try writer.print(".{d}", .{p});
+        }
+        try writer.print("-{s}", .{self.flavor});
     }
 
     pub fn equal(self: Version, other: Version) bool {
