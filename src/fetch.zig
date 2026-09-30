@@ -14,16 +14,18 @@ const FetchOptions = Config.Command.Fetch;
 const log = std.log.scoped(.fetch);
 
 pub fn fetchPackageOptions(io: Io, gpa: Allocator, options: FetchOptions, verbose: bool, dry_run: bool) !void {
+    if (!options.force and try cache.packageIsValid(io, options.spec)) {
+        if (verbose)
+            log.debug("cache hit on {s}", .{options.spec.slug});
+        if (dry_run)
+            log.info("package is in cache, would not attempt to fetch", .{});
+        return;
+    }
+
     if (dry_run) {
         var uri_buf: [1024]u8 = undefined;
         const uri_str = try makeUri(&uri_buf, options.spec, options.source_host);
         log.info("would attempt to fetch from remote: {s}", .{uri_str});
-        return;
-    }
-
-    if (!options.force and try cache.packageIsValid(io, options.spec, .{ .skip_hash = !options.spec.isStable() })) {
-        if (verbose)
-            log.debug("cache hit on {s}", .{options.spec.slug});
         return;
     }
 
@@ -35,7 +37,7 @@ pub fn fetchPackage(io: Io, gpa: Allocator, spec: PackageSpec, source: ?SourceHo
     var uri = if (source) |sh|
         try makeUri(&uri_buf, spec, sh)
     else
-        try uriFromSpec(&uri_buf, spec);
+        try makeGithubUri(&uri_buf, spec); // we should always have a source here
 
     const pretty_print = Io.File.stdout().isTty(io) catch false;
 
@@ -44,10 +46,6 @@ pub fn fetchPackage(io: Io, gpa: Allocator, spec: PackageSpec, source: ?SourceHo
     var cache_file_writer = cache_file.writer(io, &io_buf);
 
     try fetchRemote(io, gpa, uri, &cache_file_writer.interface, pretty_print);
-
-    if (!spec.isStable()) {
-        return;
-    }
 
     // this is ass and a hack
     if (cache.getPackageFile(io, spec.version, cache.hash_file_name)) |f| {
@@ -100,13 +98,6 @@ pub fn makeUri(buf: []u8, spec: PackageSpec, source: SourceHost) ![]const u8 {
         .github => makeGithubUri(buf, spec),
         .godotorg => makeGodotOrgUri(buf, spec),
     };
-}
-
-pub fn uriFromSpec(buf: []u8, spec: PackageSpec) ![]const u8 {
-    return if (spec.isStable())
-        makeGithubUri(buf, spec)
-    else
-        makeGodotOrgUri(buf, spec);
 }
 
 pub fn hashFileUri(buf: []u8, version: Version) ![]const u8 {

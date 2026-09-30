@@ -17,7 +17,7 @@ pub fn installPackage(io: Io, gpa: Allocator, options: InstallOptions, verbose: 
             .local => |path| log.info("would attempt to extract from local file: {s}", .{path}),
             .remote => {
                 var buf: [256]u8 = undefined;
-                log.info("would attempt to fetch from remote: {s}", .{try fetch.uriFromSpec(&buf, options.spec)});
+                log.info("would attempt to fetch from remote: {s}", .{try fetch.makeGithubUri(&buf, options.spec)});
             },
         }
         log.info("would attempt to extract to: {s}", .{ options.dir });
@@ -34,7 +34,7 @@ pub fn installPackage(io: Io, gpa: Allocator, options: InstallOptions, verbose: 
             break :blk try cwd.openFile(io, path, .{});
         },
         .remote => {
-            if (!options.force_fetch and try cache.packageIsValid(io, spec, .{ .skip_hash = !spec.isStable() })) {
+            if (!options.force_fetch and try cache.packageIsValid(io, spec)) {
                 log.debug("cache hit on {s}", .{spec.slug});
                 break :blk try cache.getPackageFile(io, spec.version, spec.slug);
             }
@@ -44,7 +44,7 @@ pub fn installPackage(io: Io, gpa: Allocator, options: InstallOptions, verbose: 
                 return error.FetchDisallowed;
             }
 
-            try fetch.fetchPackage(io, gpa, spec, null);
+            try fetch.fetchPackage(io, gpa, spec, .github);
 
             break :blk try cache.getPackageFile(io, spec.version, spec.slug);
         },

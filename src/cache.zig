@@ -61,11 +61,7 @@ pub fn deinit(io: std.Io) void {
     }
 }
 
-pub const CacheCheckOptions = struct {
-    skip_hash: bool = false,
-};
-
-pub fn packageIsValid(io: std.Io, spec: PackageSpec, options: CacheCheckOptions) !bool {
+pub fn packageIsValid(io: std.Io, spec: PackageSpec) !bool {
     const root = has_root orelse return error.NoCacheInit;
 
     var path_buf: [256]u8 = undefined;
@@ -81,8 +77,6 @@ pub fn packageIsValid(io: std.Io, spec: PackageSpec, options: CacheCheckOptions)
         else => return err,
     };
     defer package_file.close(io);
-
-    if (options.skip_hash) return true;
 
     const hash_file = version_dir.openFile(io, hash_file_name, .{}) catch |err| switch (err) {
         error.FileNotFound => return false,

@@ -372,9 +372,6 @@ pub const Command = union(Tag) {
             }
 
             try fetch.spec.setSlug();
-            if (!fetch.spec.isStable() and fetch.source_host != .godotorg) {
-                fetch.source_host = .godotorg;
-            }
 
             return fetch;
         }

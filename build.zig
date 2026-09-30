@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) void {
 
     const download_urls = b.addOptions();
     download_urls.addOption([]const u8, "godotorg", "https://downloads.godotengine.org");
-    download_urls.addOption([]const u8, "github", "https://github.com/godotengine/godot/releases/download");
+    download_urls.addOption([]const u8, "github", "https://github.com/godotengine/godot-builds/releases/download");
     exe.root_module.addOptions("download_urls", download_urls);
 
     const build_info = b.addOptions();
