@@ -54,7 +54,7 @@ pub fn parse(arena: std.mem.Allocator, environ: *std.process.Environ.Map, cli_ar
 }
 
 fn initDefault() Config {
-    return .{ .command = .{ .help = Config.usage }, .verbose = builtin.mode == .Debug, .dry_run = false };
+    return .{ .command = .{ .help = Config.usage }, .verbose = builtin.optimize == .debug, .dry_run = false };
 }
 
 fn initEnv(self: *Config, env: *std.process.Environ.Map) void {
@@ -107,7 +107,7 @@ pub const usage = std.fmt.comptimePrint(
     \\
     \\build:{t}-{s}
     \\
-, .{ builtin.mode, @import("build_info").git });
+, .{ builtin.optimize, @import("build_info").git });
 
 pub const Command = union(Tag) {
     install: Install,
@@ -161,7 +161,7 @@ pub const Command = union(Tag) {
             return .{
                 .spec = .default,
                 .install_source = .{ .remote = {} },
-                .dir = if (builtin.os.tag == .windows) "~/Appdata/local/gup" else "~/.local/bin",
+                .dir = if (builtin.target.os.tag == .windows) "~/Appdata/local/gup" else "~/.local/bin",
                 .link_name = "godot",
                 .setup_links = true,
                 .self_contained = false,
@@ -475,14 +475,14 @@ pub const PackageSpec = struct {
 
     const default: PackageSpec = .{
         .version = .empty,
-        .arch = switch (builtin.cpu.arch) {
+        .arch = switch (builtin.target.cpu.arch) {
             .x86_64 => .x64,
             .x86 => .x32,
             .aarch64 => .arm64,
             .arm => .arm32,
             else => .x64,
         },
-        .platform = switch (builtin.os.tag) {
+        .platform = switch (builtin.target.os.tag) {
             .windows => .windows,
             .linux => .linux,
             .macos => .macos,
@@ -696,7 +696,7 @@ fn expandHome(path: []const u8, arena: std.mem.Allocator, environ: *std.process.
         return path;
     }
 
-    const home = switch (builtin.os.tag) {
+    const home = switch (builtin.target.os.tag) {
         .windows => environ.get("USERPROFILE"),
         else => environ.get("HOME"),
     } orelse return error.MissingHomeVar;

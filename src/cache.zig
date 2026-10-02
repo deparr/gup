@@ -30,7 +30,7 @@ pub fn init(io: std.Io, environ: *std.process.Environ.Map, verbose: bool) !void 
     if (has_root) |_| return;
     const root_path = blk: {
         if (environ.get("GUP_CACHE_HOME")) |gup_cache| break :blk gup_cache;
-        const joiner = joiner: switch (builtin.os.tag) {
+        const joiner = joiner: switch (builtin.target.os.tag) {
             .windows => {
                 if (environ.get("LOCALAPPDATA")) |local_app_data| break :joiner path.fmtJoin(&.{ local_app_data, root_prefix });
                 return error.NoCacheDir;
@@ -42,7 +42,7 @@ pub fn init(io: std.Io, environ: *std.process.Environ.Map, verbose: bool) !void 
             },
         };
         var buf: [256]u8 = undefined;
-        break :blk try std.fmt.bufPrint(&buf, "{f}", .{joiner});
+        break :blk try std.mem.print(&buf, "{f}", .{joiner});
     };
 
     has_root = std.Io.Dir.cwd().createDirPathOpen(io, root_path, .{ .open_options = .{ .follow_symlinks = true, .iterate = true } }) catch |err| {
@@ -65,7 +65,7 @@ pub fn packageIsValid(io: std.Io, spec: PackageSpec) !bool {
     const root = has_root orelse return error.NoCacheInit;
 
     var path_buf: [256]u8 = undefined;
-    const version_dir_path = try std.fmt.bufPrint(&path_buf, "{f}-{s}", .{ spec.version, spec.version.flavor });
+    const version_dir_path = try std.mem.print(&path_buf, "{f}-{s}", .{ spec.version, spec.version.flavor });
     const version_dir = root.openDir(io, version_dir_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
@@ -114,14 +114,14 @@ pub fn packageIsValid(io: std.Io, spec: PackageSpec) !bool {
 pub fn getPackageFile(io: std.Io, version: Version, sub_path: []const u8) !std.Io.File {
     const root = has_root orelse return error.NoCacheInit;
     var path_buf: [256]u8 = undefined;
-    const package_path = try std.fmt.bufPrint(&path_buf, "{f}-{s}/{s}", .{ version, version.flavor, sub_path });
+    const package_path = try std.mem.print(&path_buf, "{f}-{s}/{s}", .{ version, version.flavor, sub_path });
     return root.openFile(io, package_path, .{});
 }
 
 pub fn createPackageFile(io: std.Io, version: Version, sub_path: []const u8) !std.Io.File {
     const root = has_root orelse return error.NoCacheInit;
     var path_buf: [256]u8 = undefined;
-    const version_path = try std.fmt.bufPrint(&path_buf, "{f}-{s}", .{ version, version.flavor });
+    const version_path = try std.mem.print(&path_buf, "{f}-{s}", .{ version, version.flavor });
     const version_dir = try root.createDirPathOpen(io, version_path, .{});
     defer version_dir.close(io);
     return version_dir.createFile(io, sub_path, .{ .read = true });
@@ -130,7 +130,7 @@ pub fn createPackageFile(io: std.Io, version: Version, sub_path: []const u8) !st
 pub fn putPackage(io: std.Io, version: Version, sub_path: []const u8, data: []const u8) !void {
     const root = has_root orelse return error.NoCacheInit;
     var buf: [16 * 1024]u8 = undefined;
-    const version_path = try std.fmt.bufPrint(&buf, "{f}-{s}", .{ version, version.flavor });
+    const version_path = try std.mem.print(&buf, "{f}-{s}", .{ version, version.flavor });
     const version_dir = try root.createDirPathOpen(io, version_path, .{});
     defer version_dir.close(io);
 
@@ -226,7 +226,7 @@ fn listCache(io: Io, gpa: Allocator, versions: ?[]Version, verbose: bool) !void 
                 // todo man I hate this
                 if (versions) |vs| {
                     for (vs) |v| {
-                        const version_str = try std.fmt.bufPrint(&version_str_buf, "{f}", .{std.fmt.alt(v, .formatFlavor)});
+                        const version_str = try std.mem.print(&version_str_buf, "{f}", .{std.fmt.alt(v, .formatFlavor)});
                         if (std.mem.eql(u8, version_str, entry.path)) {
                             try iter.enter(io, entry);
                             try root_info.append(gpa, .{
@@ -307,7 +307,7 @@ fn cleanCache(io: Io, gpa: Allocator, versions: ?[]Version, verbose: bool, dry_r
         } else {
             var version_str_buf: [64]u8 = undefined;
             for (vs) |v| {
-                const version_str = try std.fmt.bufPrint(&version_str_buf, "{f}", .{std.fmt.alt(v, .formatFlavor)});
+                const version_str = try std.mem.print(&version_str_buf, "{f}", .{std.fmt.alt(v, .formatFlavor)});
                 if (verbose)
                     log.info("deleting {s}/{f}/* ...", .{ root_path, std.fmt.alt(v, .formatFlavor) });
                 // todo should this try?

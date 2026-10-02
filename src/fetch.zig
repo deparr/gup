@@ -101,7 +101,7 @@ pub fn makeUri(buf: []u8, spec: PackageSpec, source: SourceHost) ![]const u8 {
 }
 
 pub fn hashFileUri(buf: []u8, version: Version) ![]const u8 {
-    return std.fmt.bufPrint(
+    return std.mem.print(
         buf,
         "{s}/{f}-{s}/SHA512-SUMS.txt",
         .{ download_urls.github, version, version.flavor },
@@ -109,7 +109,7 @@ pub fn hashFileUri(buf: []u8, version: Version) ![]const u8 {
 }
 
 pub fn makeGithubUri(buf: []u8, spec: PackageSpec) ![]const u8 {
-    return std.fmt.bufPrint(
+    return std.mem.print(
         buf,
         "{[url]s}/{[version]f}-{[flavor]s}/Godot_v{[version]f}-{[flavor]s}_{[slug]s}",
         .{ .url = download_urls.github, .version = spec.version, .flavor = spec.version.flavor, .slug = spec.slug },
@@ -117,7 +117,7 @@ pub fn makeGithubUri(buf: []u8, spec: PackageSpec) ![]const u8 {
 }
 
 pub fn makeGodotOrgUri(buf: []u8, spec: PackageSpec) ![]const u8 {
-    return std.fmt.bufPrint(
+    return std.mem.print(
         buf,
         "{s}?version={f}&flavor={s}&slug={s}&platform={s}",
         .{ download_urls.godotorg, spec.version, spec.version.flavor, spec.slug, platformQuery(spec) },

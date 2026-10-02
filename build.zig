@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addOptions("download_urls", download_urls);
 
     const build_info = b.addOptions();
-    if (optimize == .Debug) {
+    if (optimize == .debug) {
         build_info.addOption([]const u8, "git", "????");
     } else {
         const hash = runWithTrim(b, &.{ "git", "rev-parse", "--short", "HEAD" });

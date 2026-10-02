@@ -15,7 +15,7 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const gpa = init.gpa;
     const environ = init.environ_map;
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         var handle = std.os.windows.CONSOLE.USER_IO.SET_CP(.Output, 65001);
         const status = try handle.operate(io, null);
         if (status != .SUCCESS) {

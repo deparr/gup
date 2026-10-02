@@ -82,10 +82,10 @@ pub fn installPackage(io: Io, gpa: Allocator, options: InstallOptions, verbose: 
 
             if (options.setup_links and likely_main_bin) {
                 const console = if (std.mem.find(u8, filename, "console")) |_| "_console" else "";
-                const ext = if (builtin.os.tag == .windows) ".exe" else "";
+                const ext = if (builtin.target.os.tag == .windows) ".exe" else "";
 
                 var symlink_path_buf: [64]u8 = undefined;
-                const symlink_path = try std.fmt.bufPrint(&symlink_path_buf, "{s}{s}{s}", .{ options.link_name, console, ext });
+                const symlink_path = try std.mem.print(&symlink_path_buf, "{s}{s}{s}", .{ options.link_name, console, ext });
 
                 const should_link = blk: {
                     if (dest_dir.statFile(io, symlink_path, .{ .follow_symlinks = false })) |stat| {
@@ -111,7 +111,7 @@ pub fn installPackage(io: Io, gpa: Allocator, options: InstallOptions, verbose: 
                 }
             }
 
-            if (builtin.os.tag == .linux and likely_main_bin) {
+            if (builtin.target.os.tag == .linux and likely_main_bin) {
                 const file = try dest_dir.openFile(io, filename, .{ .mode = .write_only });
                 try file.setPermissions(io, .fromMode(0o744));
                 file.close(io);
