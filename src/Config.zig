@@ -269,7 +269,7 @@ pub const Command = union(Tag) {
             \\  --link-name=[STR],    -o  Base name for symlinks when using --setup-links
             \\  --from-zip=[STR],     -z  Unpack a zip at [STR] instead of using gup's cache
             \\  --self-contained,     -S  Install godot in self-contained mode
-            \\  --allow-fetch,        -D  Allow fetching from remote if specified package missing from the cache (true)
+            \\  --disallow-fetch,     -D  Disallow fetching from remote if specified package is missing from the cache (false)
             \\  --force-fetch,        -f  Always attempt to fetch from remote, regardless of cache state
             \\  --dry-run,            -n  Print actions that would be taken, but do not take them
             \\
