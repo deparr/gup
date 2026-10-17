@@ -24,7 +24,13 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const args = try init.minimal.args.toSlice(arena);
-    const config = try Config.parse(arena, environ, args[1..]);
+    const config = Config.parse(arena, environ, args[1..]) catch |err| switch (err) {
+        Config.ParseError.UnknownArg, Config.ParseError.UnknownCommand => {
+            log.info("try 'gup help [COMMAND]' for more info", .{});
+            std.process.exit(1);
+        },
+        else => return err,
+    };
 
     errdefer cache.deinit(io);
     switch (config.command) {
@@ -42,7 +48,7 @@ pub fn main(init: std.process.Init) !void {
         .cache => |cache_options| {
             try cache.init(io, environ, config.verbose);
             try cache.command(io, gpa, cache_options, config.verbose, config.dry_run);
-        }
+        },
     }
     cache.deinit(io);
 }

@@ -6,7 +6,7 @@ const log = std.log.scoped(.config);
 
 const Config = @This();
 
-const ParseError = error{
+pub const ParseError = error{
     InvalidVersion,
     InvalidPackageSpec,
     MissingHomeVar,
