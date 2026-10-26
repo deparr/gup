@@ -22,12 +22,12 @@ pub fn build(b: *std.Build) void {
     if (optimize == .debug) {
         build_info.addOption([]const u8, "git", "????");
     } else {
+        b.dependOnDirectoryMetadata(b.path(".git"));
         const hash = runWithTrim(b, &.{ "git", "rev-parse", "--short", "HEAD" });
-        const branch = runWithTrim(b, &.{ "git", "rev-parse", "--abbrev-ref", "HEAD"});
+        const branch = runWithTrim(b, &.{ "git", "rev-parse", "--abbrev-ref", "HEAD" });
         const dirty = runWithTrim(b, &.{ "git", "status", "--porcelain" }).len > 0;
         const rev = b.fmt("{s}+{s}{s}", .{ branch, hash, if (dirty) "*" else "" });
         build_info.addOption([]const u8, "git", rev);
-
     }
     exe.root_module.addOptions("build_info", build_info);
 
